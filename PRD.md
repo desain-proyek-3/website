@@ -294,7 +294,7 @@ Input: 3 foto intraoral (frontal, oklusal atas, oklusal bawah)
 
 ---
 
-## 7. ML Retrieval Strategy — RAG vs CAG vs Agentic RAG
+## 7. ML Model: Agentic RAG
 
 ### Agentic RAG
 
