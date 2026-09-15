@@ -4,21 +4,21 @@ services:
     container_name: dentify_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: dentify_admin
-      POSTGRES_PASSWORD: dentify_local_dev
-      POSTGRES_DB: dentify_db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT}:5432"
     volumes:
       - dentify_pg_data:/var/lib/postgresql/data
-      - ./dentify_schema_fase1.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - ./schema_phase1.sql:/docker-entrypoint-initdb.d/01_schema.sql
 
   chromadb:
     image: chromadb/chroma:latest
     container_name: dentify_chromadb
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${CHROMA_PORT}:8000"
     volumes:
       - dentify_chroma_data:/data
 
@@ -27,12 +27,12 @@ services:
     container_name: dentify_minio
     restart: unless-stopped
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin_local_dev
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"   # API
-      - "9001:9001"   # Console
+      - "${MINIO_API_PORT}:9000"   # API
+      - "${MINIO_CONSOLE_PORT}:9001"   # Console
     volumes:
       - dentify_minio_data:/data
 
