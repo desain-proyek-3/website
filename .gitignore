@@ -1,4 +1,4 @@
-# Backend (Jonathan)
+# Backend
 
 .env
 app/backend/.env
@@ -10,5 +10,7 @@ app/backend/services/__pycache__/
 app/backend/api/v1/__pycache__/
 app/backend/dependencies/__pycache__/
 app/backend/schemas/__pycache__/
+app/backend/tests
 context.md
 be-handover.md
+guide.md

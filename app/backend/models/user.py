@@ -46,7 +46,7 @@ class User(Base):
     )
 
     # ── Relationships ───────────────────────────────────────────────
-    subjects = relationship("Subject", back_populates="creator")
+    subjects = relationship("Subject", back_populates="creator", foreign_keys="Subject.created_by")
     matching_results = relationship("MatchingResult", back_populates="matcher")
 
     def __repr__(self) -> str:

@@ -35,6 +35,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[ERROR] Database connection failed: {e}")
         # Tetap jalankan server agar health-check bisa report status
+
+    try:
+        from services.storage_service import storage_service
+        if storage_service.ensure_bucket_exists():
+            print("[OK] MinIO storage service and bucket ready.")
+        else:
+            print("[WARN] MinIO bucket initialization returned False.")
+    except Exception as e:
+        print(f"[WARN] MinIO initialization error: {e}")
+
     yield
     # Shutdown
     print("[INFO] Shutting down Dentify API.")

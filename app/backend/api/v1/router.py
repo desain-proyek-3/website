@@ -7,10 +7,14 @@ from fastapi import APIRouter
 
 from api.v1.auth import router as auth_router
 from api.v1.audit import router as audit_router
+from api.v1.subjects import router as subjects_router
+from api.v1.dental_images import router as dental_images_router
 
 api_router = APIRouter()
 
 # Register modular sub-routers
 api_router.include_router(auth_router)
 api_router.include_router(audit_router)
+api_router.include_router(subjects_router)
+api_router.include_router(dental_images_router)
 
