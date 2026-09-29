@@ -62,8 +62,8 @@ class Settings(BaseSettings):
         return f"http://{self.CHROMA_HOST}:{self.CHROMA_PORT}"
 
     # ── AI Microservice ─────────────────────────────────────────────
-    # Base URL dibaca dari .env (dikosongkan sebagai default agar tidak terekspos di repo Git)
-    AI_SERVICE_BASE_URL: str = ""
+    AI_SERVICE_BASE_URL: str = "http://localhost:8100"
+    AI_SERVICE_API_KEY: str = "dentify-ai-dev-secret"
     AI_SERVICE_TIMEOUT_SECONDS: float = 30.0
     AI_SERVICE_POLL_INTERVAL_SECONDS: float = 2.0
     AI_SERVICE_MAX_POLL_ATTEMPTS: int = 60

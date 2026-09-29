@@ -12,19 +12,22 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import async_session_factory, get_db
 from dependencies.auth import get_current_user, require_role
 from models.dental_image import DentalImage
+from models.embedding import Embedding
 from models.inference_job import InferenceJob
+from models.tooth_record import ToothRecord
 from models.user import User
 from schemas.inference_job import (
     InferenceJobCreate,
     InferenceJobResponse,
 )
 from services.ai_service_client import ai_service_client
+from services.storage_service import storage_service
 
 router = APIRouter(prefix="/inference", tags=["Inference"])
 
@@ -40,8 +43,6 @@ async def _poll_and_update_job(job_id: UUID, ai_job_id: str) -> None:
     try:
         result = await ai_service_client.poll_until_complete(ai_job_id)
 
-        # TODO: Mapping field dari response AI service masih asumsi.
-        #       Sesuaikan setelah kontrak final dikonfirmasi dengan Bonifasius.
         ai_status = result.get("status", "failed").lower()
         now = datetime.now(timezone.utc)
 
@@ -56,8 +57,56 @@ async def _poll_and_update_job(job_id: UUID, ai_job_id: str) -> None:
 
             if ai_status == "completed":
                 job.status = "completed"
-                # TODO: Field "result" masih asumsi — bisa berisi DentalScanOutput
-                job.result_payload = result.get("result")
+                res_payload = result.get("result") or {}
+                job.result_payload = res_payload
+
+                # 1. Simpan subject embedding (512-d vector) jika ada
+                subject_embedding = res_payload.get("subject_embedding")
+                if subject_embedding and isinstance(subject_embedding, list):
+                    stmt_emb = select(Embedding).where(Embedding.subject_id == job.subject_id)
+                    emb_res = await session.execute(stmt_emb)
+                    existing_emb = emb_res.scalar_one_or_none()
+
+                    if existing_emb:
+                        existing_emb.vector = subject_embedding
+                        existing_emb.model_version = "ai_engine_v1"
+                        existing_emb.generated_at = now
+                    else:
+                        new_embedding = Embedding(
+                            subject_id=job.subject_id,
+                            vector=subject_embedding,
+                            model_version="ai_engine_v1",
+                            generated_at=now,
+                        )
+                        session.add(new_embedding)
+
+                # 2. Simpan per-tooth records jika ada
+                detected_teeth = res_payload.get("detected_teeth")
+                if detected_teeth and isinstance(detected_teeth, list):
+                    # Bersihkan record gigi lama untuk citra ini (mencegah duplikasi saat re-run)
+                    await session.execute(
+                        delete(ToothRecord).where(ToothRecord.dental_image_id == job.dental_image_id)
+                    )
+
+                    for tooth in detected_teeth:
+                        fdi = tooth.get("fdi_id") or tooth.get("fdi_number")
+                        if fdi is not None:
+                            try:
+                                fdi_num = int(fdi)
+                            except (ValueError, TypeError):
+                                continue
+
+                            if 11 <= fdi_num <= 48:
+                                tooth_rec = ToothRecord(
+                                    dental_image_id=job.dental_image_id,
+                                    fdi_number=fdi_num,
+                                    bbox=tooth.get("bbox"),
+                                    landmarks=tooth.get("landmarks"),
+                                    morphology_features=tooth.get("morphology") or tooth.get("morphology_features"),
+                                    confidence_score=tooth.get("confidence") or tooth.get("confidence_score"),
+                                    created_at=now,
+                                )
+                                session.add(tooth_rec)
             else:
                 job.status = "failed"
                 job.error_message = result.get("error", "Unknown error from AI service")
@@ -118,7 +167,13 @@ async def trigger_inference(
             detail="Citra dental tidak ditemukan atau telah dihapus",
         )
 
-    # 2. Buat row inference_jobs dengan status pending
+    # 2. Generate presigned URL dari MinIO untuk diunduh oleh AI service
+    presigned_url = storage_service.get_presigned_url(
+        object_name=dental_image.file_path,
+        expires_seconds=3600,
+    )
+
+    # 3. Buat row inference_jobs dengan status pending
     now = datetime.now(timezone.utc)
     new_job = InferenceJob(
         dental_image_id=dental_image.id,
@@ -127,6 +182,7 @@ async def trigger_inference(
         request_payload={
             "dental_image_id": str(dental_image.id),
             "subject_id": str(dental_image.subject_id),
+            "image_url": presigned_url,
             "image_path": dental_image.file_path,
         },
         retry_count=0,
@@ -139,14 +195,13 @@ async def trigger_inference(
     await db.flush()
     await db.refresh(new_job)
 
-    # 3. Set metadata untuk audit_middleware
+    # 4. Set metadata untuk audit_middleware
     request.state.audit_action = "TRIGGER_INFERENCE"
     request.state.resource_type = "inference_jobs"
     request.state.resource_id = new_job.id
 
-    # 4. Trigger ke AI service di background, lalu polling
-    #    Pola strong-reference SAMA PERSIS seperti audit_middleware.py
-    async def _trigger_and_poll(job_id: UUID, image_path: str) -> None:
+    # 5. Trigger ke AI service di background, lalu polling
+    async def _trigger_and_poll(job_id: UUID, image_url: str) -> None:
         """Trigger AI service lalu polling sampai selesai."""
         try:
             # Trigger
@@ -161,9 +216,8 @@ async def trigger_inference(
                     trigger_result = await ai_service_client.trigger_inference(
                         dental_image_id=job.dental_image_id,
                         subject_id=job.subject_id,
-                        image_file_path=image_path,
+                        image_url=image_url,
                     )
-                    # TODO: Field "job_id" dari response AI service masih asumsi
                     ai_job_id = trigger_result.get("job_id")
                     job.ai_service_job_id = ai_job_id
                     job.status = "processing"
@@ -186,7 +240,7 @@ async def trigger_inference(
             print(f"[INFERENCE_BG] Unexpected error in _trigger_and_poll for job {job_id}: {e}")
 
     task = asyncio.create_task(
-        _trigger_and_poll(new_job.id, dental_image.file_path)
+        _trigger_and_poll(new_job.id, presigned_url)
     )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)

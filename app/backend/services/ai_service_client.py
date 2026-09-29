@@ -24,40 +24,42 @@ class AIServiceClient:
     """
 
     def __init__(self) -> None:
-        self.base_url = settings.AI_SERVICE_BASE_URL
+        self.base_url = settings.AI_SERVICE_BASE_URL.rstrip("/")
+        self.api_key = settings.AI_SERVICE_API_KEY
         self.timeout = settings.AI_SERVICE_TIMEOUT_SECONDS
         self.poll_interval = settings.AI_SERVICE_POLL_INTERVAL_SECONDS
         self.max_poll_attempts = settings.AI_SERVICE_MAX_POLL_ATTEMPTS
+
+    @property
+    def headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
+        return headers
 
     async def trigger_inference(
         self,
         dental_image_id: UUID,
         subject_id: UUID,
-        image_file_path: str,
+        image_url: str,
     ) -> dict[str, Any]:
         """
         Kirim request ke AI service untuk memulai inferensi pada sebuah citra dental.
 
         Returns:
-            dict berisi minimal {"job_id": "<ai_service_job_id>", "status": "processing"}
+            dict berisi {"job_id": "<ai_service_job_id>", "status": "processing"}
 
         Raises:
             httpx.HTTPStatusError: jika AI service return non-2xx
             httpx.ConnectError: jika AI service tidak reachable
-
-        TODO: Format request ini ASUMSI — belum dikonfirmasi final ke Bonifasius.
-              Field yang dikirim mungkin perlu disesuaikan dengan kontrak DentalScanOutput.
-              Kemungkinan perlu kirim file binary langsung, bukan hanya path.
         """
-        # TODO: Payload ini masih asumsi. Sesuaikan setelah konfirmasi kontrak dengan tim AI.
         request_payload = {
             "dental_image_id": str(dental_image_id),
             "subject_id": str(subject_id),
-            "image_path": image_file_path,
+            "image_url": image_url,
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            # TODO: Endpoint path "/api/v1/inference" masih asumsi.
+        async with httpx.AsyncClient(timeout=self.timeout, headers=self.headers) as client:
             response = await client.post(
                 f"{self.base_url}/api/v1/inference",
                 json=request_payload,
@@ -70,18 +72,13 @@ class AIServiceClient:
         Polling status job ke AI service (satu kali).
 
         Returns:
-            dict berisi minimal {"job_id": "...", "status": "processing|completed|failed",
-                                  "result": {...} | null, "error": "..." | null}
+            dict berisi {"job_id": "...", "status": "processing|completed|failed",
+                         "result": {...} | null, "error": "..." | null}
 
         Raises:
             httpx.HTTPStatusError: jika AI service return non-2xx
-
-        TODO: Format response ini ASUMSI — belum dikonfirmasi final ke Bonifasius.
-              Field "result" mungkin berisi DentalScanOutput (bounding boxes, FDI numbers,
-              landmarks, embeddings) — format persisnya belum divalidasi.
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            # TODO: Endpoint path "/api/v1/inference/{job_id}/status" masih asumsi.
+        async with httpx.AsyncClient(timeout=self.timeout, headers=self.headers) as client:
             response = await client.get(
                 f"{self.base_url}/api/v1/inference/{ai_job_id}/status",
             )
@@ -95,15 +92,11 @@ class AIServiceClient:
 
         Returns:
             dict hasil polling terakhir
-
-        TODO: Status string ("completed", "failed", "processing") masih asumsi.
-              Sesuaikan dengan kontrak AI service yang sudah dikonfirmasi.
         """
         for attempt in range(self.max_poll_attempts):
             try:
                 result = await self.poll_job_status(ai_job_id)
 
-                # TODO: Nama field "status" dan nilainya masih asumsi
                 status = result.get("status", "").lower()
                 if status in ("completed", "failed"):
                     return result
