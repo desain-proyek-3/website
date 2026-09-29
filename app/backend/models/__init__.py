@@ -10,6 +10,7 @@ from models.tooth_record import ToothRecord
 from models.embedding import Embedding
 from models.matching_result import MatchingResult
 from models.audit_log import AuditLog
+from models.inference_job import InferenceJob
 
 __all__ = [
     "User",
@@ -19,5 +20,6 @@ __all__ = [
     "Embedding",
     "MatchingResult",
     "AuditLog",
+    "InferenceJob",
 ]
 

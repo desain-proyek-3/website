@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     def chroma_url(self) -> str:
         return f"http://{self.CHROMA_HOST}:{self.CHROMA_PORT}"
 
+    # ── AI Microservice ─────────────────────────────────────────────
+    # Base URL dibaca dari .env (dikosongkan sebagai default agar tidak terekspos di repo Git)
+    AI_SERVICE_BASE_URL: str = ""
+    AI_SERVICE_TIMEOUT_SECONDS: float = 30.0
+    AI_SERVICE_POLL_INTERVAL_SECONDS: float = 2.0
+    AI_SERVICE_MAX_POLL_ATTEMPTS: int = 60
+
     # ── JWT (placeholder — diimplementasi di task berikutnya) ──────
     JWT_SECRET_KEY: str = "CHANGE_ME_IN_PRODUCTION"
     JWT_ALGORITHM: str = "HS256"

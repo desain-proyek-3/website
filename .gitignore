@@ -1,7 +1,23 @@
-# Backend
-
+# General
+context.md
+be-handover.md
+fe.md
+guide.md
 img
 .env
+
+# Frontend
+app/frontend/.env
+app/frontend/.env.local
+app/frontend/.env.*.local
+app/frontend/node_modules
+app/frontend/dist
+app/frontend/dist-ssr
+app/frontend/.DS_Store
+app/frontend/*.local
+
+
+# Backend
 app/backend/.env
 app/backend/venv/
 app/backend/__pycache__/
@@ -12,6 +28,3 @@ app/backend/api/v1/__pycache__/
 app/backend/dependencies/__pycache__/
 app/backend/schemas/__pycache__/
 app/backend/tests
-context.md
-be-handover.md
-guide.md
