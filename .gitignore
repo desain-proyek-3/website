@@ -27,4 +27,5 @@ app/backend/services/__pycache__/
 app/backend/api/v1/__pycache__/
 app/backend/dependencies/__pycache__/
 app/backend/schemas/__pycache__/
-app/backend/tests
+app/backend/tests/__pycache__/
+
