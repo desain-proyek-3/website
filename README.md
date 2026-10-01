@@ -359,7 +359,37 @@ Pastikan container Docker dan server FastAPI telah menyala sebelum menjalankan i
 
 ## Frontend
 
-> **Catatan:**
-> Dokumentasi untuk modul Frontend (*React + Vite*) akan dilengkapi oleh tim frontend setelah tahap pengembangan antarmuka pengguna dimulai.
->
-> *(TODO: Diisi oleh tim Frontend saat implementasi UI/UX berjalan).*
+Modul frontend Dentify menyediakan antarmuka untuk meninjau proses identifikasi berbasis biometrik gigi. Skor AI berfungsi sebagai urutan antrean dan bukan keputusan akhir; setiap hasil pencocokan tetap harus ditinjau serta dirilis oleh odontolog forensik.
+
+### Tech Stack
+
+- **Framework:** React 18 dengan Vite 5.
+- **Styling:** Tailwind CSS 3.
+- **Routing:** React Router 6.
+- **Ikon:** lucide-react.
+
+### Menjalankan Frontend
+
+Jalankan perintah berikut dari direktori `app/frontend/`:
+
+```bash
+npm install
+npm run dev
+```
+
+Frontend tersedia secara default di `http://localhost:5173`. Untuk membuat build produksi, jalankan:
+
+```bash
+npm run build
+```
+
+### Halaman Utama
+
+| Route | Fungsi |
+|---|---|
+| `/` | Halaman awal dan akses ke proses identifikasi. |
+| `/dashboard` | Ringkasan skor kecocokan, metrik analisis, insight AI, dan perbandingan AM-PM. |
+| `/review` | Antrean peninjauan hasil AI dengan aksi persetujuan atau penolakan. |
+| `/analysis` | Pemetaan lengkung gigi, distribusi skor, data per gigi, dan log aktivitas. |
+
+> **Catatan:** Antarmuka ini masih berupa demo. Jangan gunakan untuk identifikasi operasional tanpa validasi klinis. Data kasus saat ini didefinisikan di `src/lib/data.js` dan dapat diganti saat frontend diintegrasikan dengan API backend.
