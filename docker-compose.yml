@@ -11,7 +11,7 @@ services:
       - "${POSTGRES_PORT}:5432"
     volumes:
       - dentify_pg_data:/var/lib/postgresql/data
-      - ./schema_phase1.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - ./schemas/schema_phase1.sql:/docker-entrypoint-initdb.d/01_schema.sql
 
   chromadb:
     image: chromadb/chroma:latest
