@@ -52,7 +52,99 @@ const USE_MOCK = import.meta.env.VITE_USE_MOCK_API !== 'false'
 export const ACCEPTED_TYPES = ['image/png', 'image/jpeg']
 export const MAX_FILE_MB = 20
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  constructor(message, status) {
+    super(message)
+    this.status = status
+  }
+}
+
+// ── Session token ────────────────────────────────────────────────────────
+// Satu-satunya tempat JWT disimpan. localStorage dipilih agar sesi bertahan
+// saat halaman di-refresh (sampai token kadaluarsa — backend: 30 menit, tanpa
+// refresh token). auth.js dan semua request di bawah membaca dari sini.
+const TOKEN_KEY = 'dentify_token'
+
+export function getToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
+export function setToken(token) {
+  localStorage.setItem(TOKEN_KEY, token)
+}
+
+export function clearToken() {
+  localStorage.removeItem(TOKEN_KEY)
+}
+
+export function authHeaders() {
+  const token = getToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+// ── Global 401 handling ──────────────────────────────────────────────────
+// AuthContext mendaftarkan handler yang mereset state user; ProtectedRoute
+// lalu otomatis mengarahkan ke /login.
+let unauthorizedHandler = null
+
+export function onUnauthorized(handler) {
+  unauthorizedHandler = handler
+  return () => {
+    if (unauthorizedHandler === handler) unauthorizedHandler = null
+  }
+}
+
+function handleUnauthorized() {
+  clearToken()
+  if (unauthorizedHandler) unauthorizedHandler()
+  else if (window.location.pathname !== '/login') window.location.assign('/login')
+}
+
+// FastAPI mengirim error sebagai { detail: string | [{ msg }] }.
+function errorMessage(body, status) {
+  const detail = body?.detail
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail) && detail[0]?.msg) return detail[0].msg
+  return body?.error || `The service returned an error (${status}).`
+}
+
+/**
+ * fetch() ke backend dengan header Authorization otomatis dan JSON parsing.
+ * @param {string} path  mis. '/api/v1/auth/me'
+ * @param {RequestInit & { json?: any, skipAuthRedirect?: boolean }} opts
+ *   json             — body yang akan di-JSON-kan (Content-Type diset otomatis)
+ *   skipAuthRedirect — 401 tidak memicu logout global (dipakai oleh login)
+ */
+export async function apiFetch(path, { json, skipAuthRedirect, headers, ...init } = {}) {
+  const finalHeaders = { ...authHeaders(), ...headers }
+  if (json !== undefined) {
+    finalHeaders['Content-Type'] = 'application/json'
+    init.body = JSON.stringify(json)
+  }
+
+  let res
+  try {
+    res = await fetch(`${BASE_URL}${path}`, { ...init, headers: finalHeaders })
+  } catch (err) {
+    if (err.name === 'AbortError') throw err
+    throw new ApiError('Tidak dapat terhubung ke server. Periksa koneksi lalu coba lagi.', 0)
+  }
+
+  let body = null
+  try {
+    body = await res.json()
+  } catch {
+    // non-JSON body
+  }
+
+  if (res.status === 401 && !skipAuthRedirect) handleUnauthorized()
+  if (!res.ok) throw new ApiError(errorMessage(body, res.status), res.status)
+  return body
+}
 
 /**
  * Send one dental image to the backend for AI identification.
@@ -71,6 +163,7 @@ export async function identifyImage(file, opts = {}) {
   try {
     res = await fetch(`${BASE_URL}/api/v1/identify`, {
       method: 'POST',
+      headers: authHeaders(),
       body: form,
       signal: opts.signal,
     })
@@ -86,9 +179,8 @@ export async function identifyImage(file, opts = {}) {
     // non-JSON body, fall through to status check below
   }
 
-  if (!res.ok) {
-    throw new ApiError(body?.error || `The service returned an error (${res.status}).`)
-  }
+  if (res.status === 401) handleUnauthorized()
+  if (!res.ok) throw new ApiError(errorMessage(body, res.status), res.status)
   return body
 }
 
