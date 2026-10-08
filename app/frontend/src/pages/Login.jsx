@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate, useLocation } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { AlertTriangle, ArrowRight, Loader2 } from 'lucide-react'
 import { Mark } from '../components/Logo.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
@@ -121,10 +121,7 @@ export default function Login() {
 
         {/* Footer */}
         <p className="mt-6 text-center text-[13px] text-slate-500">
-          Belum punya akun?{' '}
-          <Link to="/signup" className="font-semibold text-teal-700 hover:text-teal-800">
-            Daftar di sini
-          </Link>
+          Belum punya akun? Akun dibuat oleh admin posko — hubungi admin Anda.
         </p>
 
         <p className="mt-8 text-center text-[11.5px] text-slate-400">

@@ -2,11 +2,13 @@
 Dentify API v1 — Inference Endpoints
 Trigger inferensi AI dan cek status job.
 Role akses:
-- Admin & Examiner: POST trigger
+- Admin & Examiner: POST trigger untuk citra subjek post-mortem
+- Admin saja: POST trigger untuk citra milik subjek ante-mortem
 - Semua role: GET status job
 """
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
@@ -16,10 +18,11 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import async_session_factory, get_db
-from dependencies.auth import get_current_user, require_role
+from dependencies.auth import ensure_can_modify_subject_type, get_current_user, require_role
 from models.dental_image import DentalImage
 from models.embedding import Embedding
 from models.inference_job import InferenceJob
+from models.subject import Subject
 from models.tooth_record import ToothRecord
 from models.user import User
 from schemas.inference_job import (
@@ -30,6 +33,8 @@ from services.ai_service_client import ai_service_client
 from services.storage_service import storage_service
 
 router = APIRouter(prefix="/inference", tags=["Inference"])
+
+logger = logging.getLogger("dentify.inference")
 
 # ── Strong reference set untuk background tasks (pola dari audit_middleware.py) ──
 _background_tasks: set[asyncio.Task] = set()
@@ -52,10 +57,23 @@ async def _poll_and_update_job(job_id: UUID, ai_job_id: str) -> None:
             job = db_result.scalar_one_or_none()
 
             if not job:
-                print(f"[INFERENCE_BG] Job {job_id} tidak ditemukan di DB")
+                logger.error(
+                    "[INFERENCE_BG] Job %s tidak ditemukan di DB saat menyimpan hasil AI "
+                    "(ai_job_id=%s) — hasil inferensi dibuang",
+                    job_id,
+                    ai_job_id,
+                )
                 return
 
             if ai_status == "completed":
+                # Kunci row subjek sampai commit: hasil job lain untuk subjek yang sama
+                # (mis. citra depan/kiri/kanan) menunggu giliran. Tanpa ini, pola
+                # cek-lalu-insert di bawah bisa bentrok di UNIQUE(embeddings.subject_id)
+                # dan delete-lalu-insert tooth_records bisa menghasilkan duplikat.
+                await session.execute(
+                    select(Subject.id).where(Subject.id == job.subject_id).with_for_update()
+                )
+
                 job.status = "completed"
                 res_payload = result.get("result") or {}
                 job.result_payload = res_payload
@@ -167,6 +185,9 @@ async def trigger_inference(
             detail="Citra dental tidak ditemukan atau telah dihapus",
         )
 
+    subject_type = await db.scalar(select(Subject.subject_type).where(Subject.id == dental_image.subject_id))
+    ensure_can_modify_subject_type(current_user, subject_type)
+
     # 2. Generate presigned URL dari MinIO untuk diunduh oleh AI service
     presigned_url = storage_service.get_presigned_url(
         object_name=dental_image.file_path,
@@ -192,7 +213,10 @@ async def trigger_inference(
     )
 
     db.add(new_job)
-    await db.flush()
+    # Commit (bukan hanya flush) SEBELUM create_task: background task memakai
+    # session/koneksi sendiri dan hanya bisa melihat row yang sudah di-commit.
+    # Tanpa ini job kadang tidak ditemukan dan tertahan 'pending' selamanya.
+    await db.commit()
     await db.refresh(new_job)
 
     # 4. Set metadata untuk audit_middleware
@@ -210,6 +234,13 @@ async def trigger_inference(
                 db_result = await session.execute(stmt)
                 job = db_result.scalar_one_or_none()
                 if not job:
+                    # Seharusnya tidak terjadi lagi sejak trigger_inference commit
+                    # sebelum create_task; kalau muncul, job akan tertahan 'pending'.
+                    logger.error(
+                        "[INFERENCE_BG] Job %s tidak terlihat oleh background task — "
+                        "AI service tidak dipanggil, job akan tertahan 'pending'",
+                        job_id,
+                    )
                     return
 
                 try:

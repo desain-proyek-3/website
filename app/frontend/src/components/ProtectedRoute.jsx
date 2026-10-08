@@ -7,8 +7,9 @@ import { useAuth } from '../context/AuthContext.jsx'
  * redirected to /login, preserving the intended destination so they
  * can be sent back after authenticating. While a stored token is still
  * being validated against /auth/me, a spinner is shown instead.
+ * With `roles`, a logged-in user whose role is not listed is sent to /dashboard.
  */
-export default function ProtectedRoute({ children }) {
+export default function ProtectedRoute({ children, roles }) {
   const { user, loading } = useAuth()
   const location = useLocation()
 
@@ -22,6 +23,10 @@ export default function ProtectedRoute({ children }) {
 
   if (!user) {
     return <Navigate to="/login" state={{ from: location }} replace />
+  }
+
+  if (roles && !roles.includes(user.role)) {
+    return <Navigate to="/dashboard" replace />
   }
 
   return children

@@ -10,6 +10,7 @@ from api.v1.audit import router as audit_router
 from api.v1.subjects import router as subjects_router
 from api.v1.dental_images import router as dental_images_router
 from api.v1.inference import router as inference_router
+from api.v1.users import router as users_router
 
 api_router = APIRouter()
 
@@ -19,4 +20,5 @@ api_router.include_router(audit_router)
 api_router.include_router(subjects_router)
 api_router.include_router(dental_images_router)
 api_router.include_router(inference_router)
+api_router.include_router(users_router)
 
