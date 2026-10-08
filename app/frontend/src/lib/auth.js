@@ -1,12 +1,22 @@
 /**
- * Mock authentication helpers backed by localStorage.
+ * Authentication helpers.
  *
- * All user records live in localStorage under the key "dentify_users".
- * The currently logged-in session is stored under "dentify_session".
+ * Login/logout talk to the real backend:
+ *   POST /api/v1/auth/login  (JSON { username, password }) → { access_token, token_type }
+ *   GET  /api/v1/auth/me     (Bearer token)                → { id, username, email, role, full_name, is_active, created_at }
+ *
+ * The JWT is stored by api.js (localStorage "dentify_token"); the user profile
+ * is never persisted — it is re-fetched from /auth/me on every page load.
+ *
+ * signUp() is still a localStorage mock: the backend has no public signup yet
+ * (see integration.md §2).
  */
 
+import { ApiError, apiFetch, clearToken, getToken, setToken } from './api.js'
+
 const USERS_KEY = 'dentify_users'
-const SESSION_KEY = 'dentify_session'
+// Legacy mock session key — only cleared now, no longer read.
+const LEGACY_SESSION_KEY = 'dentify_session'
 
 export const AVAILABLE_ROLES = [
   'Field Technician',
@@ -44,7 +54,7 @@ function getInitials(name) {
 }
 
 /**
- * Register a new user.
+ * Register a new user (mock — not wired to the backend yet).
  */
 export function signUp({ name, email, password, role }) {
   const users = getUsers()
@@ -67,50 +77,49 @@ export function signUp({ name, email, password, role }) {
   users.push(user)
   saveUsers(users)
 
-  const session = { id: user.id, name: user.name, email: user.email, role: user.role, initials: user.initials }
-  localStorage.setItem(SESSION_KEY, JSON.stringify(session))
-
-  return session
+  return { id: user.id, name: user.name, email: user.email, role: user.role, initials: user.initials }
 }
 
 /**
- * Authenticate an existing user.
+ * Fetch the profile of the user owning the stored token.
  */
-export function login({ email, password, role }) {
-  const users = getUsers()
-  const userIndex = users.findIndex(
-    (u) => u.email.toLowerCase() === email.toLowerCase() && u.password === password,
-  )
+export function fetchCurrentUser() {
+  return apiFetch('/api/v1/auth/me')
+}
 
-  if (userIndex === -1) {
-    throw new Error('Email atau password salah.')
+/**
+ * Authenticate against the backend, store the JWT, then load the profile.
+ * @returns {Promise<object>} the /auth/me payload
+ */
+export async function login({ username, password }) {
+  let token
+  try {
+    token = await apiFetch('/api/v1/auth/login', {
+      method: 'POST',
+      json: { username, password },
+      skipAuthRedirect: true,
+    })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      throw new ApiError('Username atau password salah.', 401)
+    }
+    throw err
   }
 
-  const user = users[userIndex]
-  if (role && role !== user.role) {
-    user.role = role
-    users[userIndex] = user
-    saveUsers(users)
+  setToken(token.access_token)
+  try {
+    return await fetchCurrentUser()
+  } catch (err) {
+    clearToken()
+    throw err
   }
-
-  const session = { id: user.id, name: user.name, email: user.email, role: user.role, initials: user.initials }
-  localStorage.setItem(SESSION_KEY, JSON.stringify(session))
-
-  return session
 }
 
 export function logout() {
-  localStorage.removeItem(SESSION_KEY)
+  clearToken()
+  localStorage.removeItem(LEGACY_SESSION_KEY)
 }
 
-export function getCurrentUser() {
-  try {
-    return JSON.parse(localStorage.getItem(SESSION_KEY)) || null
-  } catch {
-    return null
-  }
-}
-
-export function isAuthenticated() {
-  return getCurrentUser() !== null
+export function hasToken() {
+  return Boolean(getToken())
 }

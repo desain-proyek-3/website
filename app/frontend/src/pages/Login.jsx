@@ -1,18 +1,16 @@
 import { useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
-import { AlertTriangle, ArrowRight, Loader2, UserCheck } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Loader2 } from 'lucide-react'
 import { Mark } from '../components/Logo.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { AVAILABLE_ROLES } from '../lib/auth.js'
 
 export default function Login() {
   const { login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
 
-  const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [role, setRole] = useState(AVAILABLE_ROLES[0])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -22,14 +20,14 @@ export default function Login() {
     e.preventDefault()
     setError('')
 
-    if (!email || !password) {
-      setError('Email dan password harus diisi.')
+    if (!username || !password) {
+      setError('Username dan password harus diisi.')
       return
     }
 
     setLoading(true)
     try {
-      login({ email, password, role })
+      await login({ username: username.trim(), password })
       navigate(from, { replace: true })
     } catch (err) {
       setError(err.message)
@@ -56,7 +54,7 @@ export default function Login() {
         <div className="card mt-8 p-7">
           <h2 className="text-[18px] font-semibold text-ink">Login</h2>
           <p className="mt-1 text-[13px] text-slate-500">
-            Masukkan akun dan pilih peran Anda saat ini
+            Masukkan username dan password akun Anda
           </p>
 
           {error && (
@@ -68,16 +66,16 @@ export default function Login() {
 
           <form onSubmit={handleSubmit} className="mt-5 space-y-4">
             <div>
-              <label htmlFor="email" className="block text-[13px] font-medium text-slate-700">
-                Email
+              <label htmlFor="username" className="block text-[13px] font-medium text-slate-700">
+                Username
               </label>
               <input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="nama@email.com"
-                autoComplete="email"
+                id="username"
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="username"
+                autoComplete="username"
                 className="mt-1.5 block h-11 w-full rounded-xl border border-slate-200 bg-white px-4
                            text-[14px] placeholder:text-slate-400
                            focus:border-teal-500 focus:outline-none focus:ring-4 focus:ring-teal-500/10"
@@ -99,28 +97,6 @@ export default function Login() {
                            text-[14px] placeholder:text-slate-400
                            focus:border-teal-500 focus:outline-none focus:ring-4 focus:ring-teal-500/10"
               />
-            </div>
-
-            <div>
-              <label htmlFor="role" className="block text-[13px] font-medium text-slate-700">
-                Peran / Role Pengguna
-              </label>
-              <div className="relative mt-1.5">
-                <select
-                  id="role"
-                  value={role}
-                  onChange={(e) => setRole(e.target.value)}
-                  className="block h-11 w-full appearance-none rounded-xl border border-slate-200 bg-white px-4 pr-10
-                             text-[14px] text-ink focus:border-teal-500 focus:outline-none focus:ring-4 focus:ring-teal-500/10"
-                >
-                  {AVAILABLE_ROLES.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
-                <UserCheck className="pointer-events-none absolute right-3.5 top-3.5 h-4 w-4 text-slate-400" />
-              </div>
             </div>
 
             <button

@@ -1,8 +1,6 @@
 -- =====================================================================
 -- Dentify: Skema PostgreSQL Tambahan — Fase 3b (Inference Jobs)
 -- Scope: Tabel pelacakan job inferensi ke AI microservice
--- Jalankan manual:
---   Get-Content schemas/schema_phase3b_inference.sql | docker exec -i dentify_postgres psql -U dentify_admin -d dentify_db
 -- =====================================================================
 
 -- ENUM untuk status inference job
