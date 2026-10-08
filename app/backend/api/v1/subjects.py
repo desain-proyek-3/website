@@ -3,7 +3,8 @@ Dentify API v1 — Subjects Endpoints
 CRUD untuk data Subjek forensik Ante-Mortem (AM) dan Post-Mortem (PM).
 Mendukung soft-delete untuk menjaga keutuhan chain-of-custody data forensik.
 Role akses:
-- Admin & Examiner: POST, PUT, DELETE
+- Admin & Examiner: POST, PUT, DELETE untuk subjek post-mortem
+- Admin saja: POST, PUT, DELETE yang melibatkan subjek ante-mortem
 - Semua role (termasuk Viewer): GET
 """
 
@@ -12,11 +13,12 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
-from dependencies.auth import get_current_user, require_role
+from dependencies.auth import ensure_can_modify_subject_type, get_current_user, require_role
+from models.dental_image import DentalImage
 from models.subject import Subject
 from models.user import User
 from schemas.subject import (
@@ -44,6 +46,7 @@ async def create_subject(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> SubjectResponse:
     """Buat subjek baru."""
+    ensure_can_modify_subject_type(current_user, payload.subject_type)
     now = datetime.now(timezone.utc)
     new_subject = Subject(
         subject_type=payload.subject_type,
@@ -157,6 +160,9 @@ async def update_subject(
             detail="Subjek tidak ditemukan atau telah dihapus",
         )
 
+    # Termasuk mengubah tipe dari/ke ante_mortem
+    ensure_can_modify_subject_type(current_user, subject.subject_type, payload.subject_type)
+
     subject.subject_type = payload.subject_type
     subject.full_name = payload.full_name
     subject.case_reference = payload.case_reference
@@ -177,7 +183,10 @@ async def update_subject(
     "/{id}",
     response_model=SubjectResponse,
     summary="Delete Subject (Soft Delete)",
-    description="Menghapus subjek secara lunak (soft-delete). Data fisik tidak dihapus demi kepatuhan chain-of-custody forensik.",
+    description=(
+        "Menghapus subjek secara lunak (soft-delete), termasuk seluruh citra aktif miliknya. "
+        "Data fisik tidak dihapus demi kepatuhan chain-of-custody forensik."
+    ),
 )
 async def delete_subject(
     id: UUID,
@@ -185,7 +194,7 @@ async def delete_subject(
     current_user: Annotated[User, Depends(require_role(["admin", "examiner"]))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> SubjectResponse:
-    """Soft delete subjek."""
+    """Soft delete subjek beserta citra aktifnya (satu transaksi)."""
     stmt = select(Subject).where(Subject.id == id, Subject.is_deleted == False)
     result = await db.execute(stmt)
     subject = result.scalar_one_or_none()
@@ -196,10 +205,19 @@ async def delete_subject(
             detail="Subjek tidak ditemukan atau telah dihapus",
         )
 
+    ensure_can_modify_subject_type(current_user, subject.subject_type)
+
     now = datetime.now(timezone.utc)
     subject.is_deleted = True
     subject.deleted_at = now
     subject.deleted_by = current_user.id
+
+    # Citra milik subjek ikut di-soft-delete agar tidak ada citra "aktif" tanpa subjek aktif.
+    images_result = await db.execute(
+        update(DentalImage)
+        .where(DentalImage.subject_id == subject.id, DentalImage.is_deleted == False)
+        .values(is_deleted=True, deleted_at=now, deleted_by=current_user.id)
+    )
 
     await db.commit()
     await db.refresh(subject)
@@ -207,5 +225,6 @@ async def delete_subject(
     request.state.audit_action = "DELETE_SUBJECT"
     request.state.resource_type = "subjects"
     request.state.resource_id = subject.id
+    request.state.audit_details = {"images_soft_deleted": images_result.rowcount}
 
     return SubjectResponse.model_validate(subject)

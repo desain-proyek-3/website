@@ -91,3 +91,18 @@ def require_role(allowed_roles: list[str]) -> Callable:
         return current_user
 
     return role_checker
+
+
+AM_ADMIN_ONLY_DETAIL = "Data ante-mortem hanya dapat dikelola oleh admin"
+
+
+def ensure_can_modify_subject_type(user: User, *subject_types: str) -> None:
+    """
+    Data ante-mortem (AM) hanya boleh dibuat/diubah/dihapus oleh admin —
+    termasuk citra dan inferensi milik subjek AM. Data post-mortem tetap
+    mengikuti role endpoint masing-masing (admin & examiner).
+    Raise 403 bila salah satu subject_type yang terlibat adalah 'ante_mortem'
+    dan user bukan admin.
+    """
+    if "ante_mortem" in subject_types and user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=AM_ADMIN_ONLY_DETAIL)

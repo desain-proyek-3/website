@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   AlertTriangle,
@@ -7,20 +7,23 @@ import {
   CircleDot,
   History,
   FileSpreadsheet,
+  FlaskConical,
   Loader2,
-  RotateCcw,
+  Lock,
   ServerCog,
-  Sparkles,
   Trash2,
+  UserPlus,
 } from 'lucide-react'
-import Dropzone from '../components/Dropzone.jsx'
-import { identifyImage, usingMock } from '../lib/api.js'
+import DentalUploadPanel from '../components/DentalUploadPanel.jsx'
+import { VIEW_TYPES, createSubject, mockCandidates } from '../lib/api.js'
+import { DEFAULT_NO_ACCESS_MSG, useDentalUpload } from '../lib/useDentalUpload.js'
 import { CASE } from '../lib/data.js'
 import { useAuth } from '../context/AuthContext.jsx'
 import { usePosko } from '../context/PoskoContext.jsx'
 import { useHistory } from '../context/HistoryContext.jsx'
 
-const STAGES = ['Uploading image', 'Extracting dental features', 'Matching against AM records']
+// Backend roles allowed to create post-mortem subjects, upload and trigger inference.
+const WRITE_ROLES = ['admin', 'examiner']
 
 const STATUS_STYLE = {
   match: { chip: 'bg-teal-50 text-teal-700 ring-teal-200', Icon: CheckCircle2, word: 'MATCH' },
@@ -28,99 +31,94 @@ const STATUS_STYLE = {
   conflict: { chip: 'bg-rose-50 text-rose-700 ring-rose-200', Icon: AlertTriangle, word: 'CONFLICT' },
 }
 
+const inputCls =
+  'mt-1.5 block h-10 w-full rounded-xl border border-slate-200 bg-white px-3.5 text-[13.5px] ' +
+  'placeholder:text-slate-400 focus:border-teal-500 focus:outline-none focus:ring-4 focus:ring-teal-500/10'
+
 export default function Identify() {
   const { user } = useAuth()
   const { posko } = usePosko()
   const { history, addHistoryItem, clearHistory } = useHistory()
+  const canWrite = WRITE_ROLES.includes(user?.role)
 
-  const [file, setFile] = useState(null)
-  const [previewUrl, setPreviewUrl] = useState(null)
-  const [status, setStatus] = useState('idle') // idle | processing | done | error
-  const [progress, setProgress] = useState(0)
+  // ── Subject (post-mortem) ──
+  const [subject, setSubject] = useState(null)
+  const [subjectForm, setSubjectForm] = useState({ full_name: '', case_reference: CASE.id, notes: '' })
+  const [subjectBusy, setSubjectBusy] = useState(false)
+  const [subjectError, setSubjectError] = useState('')
   const [result, setResult] = useState(null)
-  const [errorMsg, setErrorMsg] = useState('')
-  const abortRef = useRef(null)
 
-  useEffect(() => {
-    if (!file) {
-      setPreviewUrl(null)
-      return
-    }
-    const url = URL.createObjectURL(file)
-    setPreviewUrl(url)
-    return () => URL.revokeObjectURL(url)
-  }, [file])
+  // ── Upload + inference (shared with AmRecords) ──
+  const upload = useDentalUpload(subject?.id ?? null, {
+    onCompleted: ({ job, imageId, view, file, teeth }) => {
+      const confs = teeth.map((t) => t.confidence).filter((c) => c != null)
+      const avg = confs.length ? confs.reduce((a, b) => a + b, 0) / confs.length : null
+      const processingTimeMs = job.completed_at
+        ? new Date(job.completed_at) - new Date(job.created_at)
+        : null
 
-  const reset = () => {
-    abortRef.current?.abort()
-    setFile(null)
-    setResult(null)
-    setErrorMsg('')
-    setProgress(0)
-    setStatus('idle')
-  }
-
-  const process = async () => {
-    if (!file) return
-    setStatus('processing')
-    setErrorMsg('')
-    setProgress(0)
-
-    const controller = new AbortController()
-    abortRef.current = controller
-
-    try {
-      const data = await identifyImage(file, {
-        caseId: CASE.id,
-        signal: controller.signal,
-        onProgress: setProgress,
-      })
+      const data = {
+        requestId: job.id,
+        imageId,
+        processingTimeMs,
+        imageQuality: null, // not provided by the backend
+        viewType: view,
+        detectedTeeth: teeth,
+        extractedFeatures: [
+          { label: 'Gigi terdeteksi', value: `${teeth.length}` },
+          { label: 'Rata-rata confidence', value: avg == null ? '–' : `${avg.toFixed(1)}%` },
+          { label: 'Sudut citra', value: VIEW_TYPES.find((v) => v.value === view)?.label || view },
+          { label: 'Job ID', value: job.id.slice(0, 8) },
+        ],
+        candidates: mockCandidates(file), // MOCK until the matching endpoint exists
+      }
       setResult(data)
-      setStatus('done')
 
-      // Save to analysis history automatically
-      const historyRecord = {
+      addHistoryItem({
         id: `ANL-${Date.now().toString(36).toUpperCase()}`,
-        timestamp: new Date().toLocaleString('id-ID', {
-          dateStyle: 'medium',
-          timeStyle: 'short',
-        }),
+        timestamp: new Date().toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }),
         fileName: file.name,
         fileSize: (file.size / (1024 * 1024)).toFixed(2) + ' MB',
         posko: posko,
-        operator: `${user?.name || 'Alicia Kiyoumi'} (${user?.role || 'Field Technician'})`,
+        operator: `${user?.full_name || user?.username} (${user?.role})`,
         result: data,
-      }
-      addHistoryItem(historyRecord)
+      })
+    },
+  })
+
+  // A new run (or a reset / new file) clears the previous result.
+  useEffect(() => {
+    if (upload.phase === 'idle' || upload.phase === 'uploading') setResult(null)
+  }, [upload.phase])
+
+  const submitSubject = async (e) => {
+    e.preventDefault()
+    setSubjectError('')
+    setSubjectBusy(true)
+    try {
+      const trimmed = Object.fromEntries(
+        Object.entries(subjectForm).map(([k, v]) => [k, v.trim() || null]),
+      )
+      setSubject(await createSubject({ subject_type: 'post_mortem', ...trimmed }))
     } catch (err) {
-      if (err.name === 'AbortError') return
-      setErrorMsg(err.message || 'Something went wrong while processing this image.')
-      setStatus('error')
+      setSubjectError(err.status === 403 ? DEFAULT_NO_ACCESS_MSG : err.message)
+    } finally {
+      setSubjectBusy(false)
     }
   }
 
-  const stageIndex = Math.min(Math.floor((progress / 100) * STAGES.length), STAGES.length - 1)
+  const newSubject = () => {
+    setSubject(null)
+    setResult(null)
+    setSubjectForm({ full_name: '', case_reference: CASE.id, notes: '' })
+  }
+
   const topCandidate = result?.candidates?.[0]
 
   return (
     <div className="space-y-6">
-      {usingMock && (
-        <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-          <ServerCog className="h-4 w-4 shrink-0 text-amber-600" />
-          <p className="text-[13px] text-amber-800">
-            Running against a mock response — no backend is connected yet. Set{' '}
-            <code className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[12px]">
-              VITE_USE_MOCK_API=false
-            </code>{' '}
-            and <code className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[12px]">VITE_API_BASE_URL</code> in
-            <code className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[12px] ml-1">.env</code> once the
-            identification API is live.
-          </p>
-        </div>
-      )}
-
       <div className="grid gap-6 xl:grid-cols-12">
-        {/* Upload + preview */}
+        {/* Subject + upload */}
         <section className="card p-6 xl:col-span-6">
           <h2 className="text-[17px] font-semibold text-ink">Upload a dental image</h2>
           <p className="mt-1 text-[13px] text-slate-500">
@@ -128,70 +126,99 @@ export default function Identify() {
             dan hasilnya akan tersimpan di riwayat analisis.
           </p>
 
-          <div className="mt-5">
-            <Dropzone
-              file={file}
-              previewUrl={previewUrl}
-              onSelect={(f) => {
-                setFile(f)
-                setResult(null)
-                setStatus('idle')
-                setErrorMsg('')
-              }}
-              onClear={reset}
-              disabled={status === 'processing'}
-            />
-          </div>
-
-          <div className="mt-5 flex flex-wrap gap-3">
-            <button
-              onClick={process}
-              disabled={!file || status === 'processing'}
-              className="btn-primary h-11 flex-1 px-5 disabled:cursor-not-allowed sm:flex-none"
-            >
-              {status === 'processing' ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Memproses…
-                </>
-              ) : (
-                <>
-                  <Sparkles className="h-4 w-4" />
-                  Proses dengan AI Model
-                </>
-              )}
-            </button>
-            {(file || status === 'done') && status !== 'processing' && (
-              <button onClick={reset} className="btn-ghost h-11 px-5">
-                <RotateCcw className="h-4 w-4" />
-                Reset Form
-              </button>
-            )}
-          </div>
-
-          {status === 'processing' && (
-            <div className="mt-5 rounded-xl bg-slate-50 p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-[13px] font-medium text-slate-600">{STAGES[stageIndex]}</span>
-                <span className="font-mono text-[12.5px] text-slate-500">{progress}%</span>
+          {!canWrite ? (
+            <div className="mt-5 flex items-start gap-3 rounded-xl bg-slate-50 p-4">
+              <Lock className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
+              <div>
+                <p className="text-[13.5px] font-semibold text-slate-700">Akses hanya-baca</p>
+                <p className="mt-0.5 text-[12.5px] text-slate-500">
+                  {DEFAULT_NO_ACCESS_MSG} Role Anda saat ini: <span className="font-mono">{user?.role}</span>.
+                  Hubungi admin bila Anda membutuhkan akses examiner.
+                </p>
               </div>
-              <div className="mt-2.5 h-2 overflow-hidden rounded-full bg-slate-200">
-                <div
-                  className="h-full rounded-full bg-teal-600 transition-[width] duration-200"
-                  style={{ width: `${progress}%` }}
+            </div>
+          ) : !subject ? (
+            /* Step 1 — create the post-mortem subject */
+            <form onSubmit={submitSubject} className="mt-5 space-y-3.5 rounded-xl border border-slate-200 p-4">
+              <div className="flex items-center gap-2">
+                <UserPlus className="h-4 w-4 text-teal-700" />
+                <h3 className="text-[14px] font-semibold text-ink">Subjek post-mortem baru</h3>
+              </div>
+              <div>
+                <label htmlFor="pm-name" className="block text-[12.5px] font-medium text-slate-700">
+                  Nama / label subjek <span className="font-normal text-slate-400">(opsional)</span>
+                </label>
+                <input
+                  id="pm-name"
+                  maxLength={255}
+                  value={subjectForm.full_name}
+                  onChange={(e) => setSubjectForm((f) => ({ ...f, full_name: e.target.value }))}
+                  placeholder="Kosongkan bila belum diketahui"
+                  className={inputCls}
                 />
               </div>
-            </div>
-          )}
-
-          {status === 'error' && (
-            <div className="mt-5 flex items-start gap-3 rounded-xl bg-rose-50 p-4">
-              <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600" />
               <div>
-                <p className="text-[13.5px] font-semibold text-rose-800">Processing failed</p>
-                <p className="mt-0.5 text-[12.5px] text-rose-700">{errorMsg}</p>
+                <label htmlFor="pm-case" className="block text-[12.5px] font-medium text-slate-700">
+                  Referensi kasus <span className="font-normal text-slate-400">(opsional)</span>
+                </label>
+                <input
+                  id="pm-case"
+                  maxLength={100}
+                  value={subjectForm.case_reference}
+                  onChange={(e) => setSubjectForm((f) => ({ ...f, case_reference: e.target.value }))}
+                  className={inputCls}
+                />
               </div>
-            </div>
+              <div>
+                <label htmlFor="pm-notes" className="block text-[12.5px] font-medium text-slate-700">
+                  Catatan <span className="font-normal text-slate-400">(opsional)</span>
+                </label>
+                <input
+                  id="pm-notes"
+                  value={subjectForm.notes}
+                  onChange={(e) => setSubjectForm((f) => ({ ...f, notes: e.target.value }))}
+                  placeholder="Lokasi temuan, kondisi fisik, dsb."
+                  className={inputCls}
+                />
+              </div>
+              {subjectError && (
+                <p className="flex items-center gap-2 text-[12.5px] font-medium text-rose-600">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  {subjectError}
+                </p>
+              )}
+              <button type="submit" disabled={subjectBusy} className="btn-primary h-10 px-5 text-[13.5px]">
+                {subjectBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
+                Buat subjek
+              </button>
+            </form>
+          ) : (
+            <>
+              {/* Active subject */}
+              <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-teal-50/60 px-4 py-3">
+                <div className="min-w-0">
+                  <div className="readout">SUBJEK POST-MORTEM AKTIF</div>
+                  <div className="mt-0.5 truncate text-[13.5px] font-semibold text-ink">
+                    {subject.full_name || 'Tanpa nama'}
+                    <span className="ml-2 font-mono text-[11.5px] font-normal text-teal-700">
+                      {subject.id.slice(0, 8)}
+                    </span>
+                  </div>
+                  {subject.case_reference && (
+                    <div className="text-[11.5px] text-slate-500">{subject.case_reference}</div>
+                  )}
+                </div>
+                <button onClick={newSubject} disabled={upload.busy} className="btn-ghost h-9 px-3 text-[12.5px]">
+                  <UserPlus className="h-3.5 w-3.5" />
+                  Subjek baru
+                </button>
+              </div>
+
+              <DentalUploadPanel
+                upload={upload}
+                allFilledHint="Ketiga sudut subjek ini sudah terisi. Buat subjek baru untuk mengunggah citra lain."
+              />
+            </>
           )}
         </section>
 
@@ -199,7 +226,7 @@ export default function Identify() {
         <section className="card p-6 xl:col-span-6">
           <div className="flex items-center justify-between">
             <h2 className="text-[17px] font-semibold text-ink">Hasil Analisis AI</h2>
-            {result && (
+            {result?.processingTimeMs != null && (
               <span className="font-mono text-[11.5px] text-slate-400">{result.processingTimeMs} ms</span>
             )}
           </div>
@@ -213,16 +240,6 @@ export default function Identify() {
             </div>
           ) : (
             <div className="mt-5 space-y-5">
-              {result.imageQuality.issues.length > 0 && (
-                <div className="flex items-start gap-3 rounded-xl bg-amber-50 p-3.5">
-                  <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
-                  <div className="text-[12.5px] text-amber-800">
-                    <span className="font-semibold">Image quality {result.imageQuality.score}/100.</span>{' '}
-                    {result.imageQuality.issues.join('; ')}.
-                  </div>
-                </div>
-              )}
-
               <div>
                 <h3 className="readout">FITUR GIGI TEREKSTRAKSI</h3>
                 <dl className="mt-2.5 grid grid-cols-2 gap-3">
@@ -233,10 +250,36 @@ export default function Identify() {
                     </div>
                   ))}
                 </dl>
+                {result.detectedTeeth?.length > 0 ? (
+                  <ul className="mt-3 flex flex-wrap gap-1.5">
+                    {result.detectedTeeth.map((t, i) => (
+                      <li
+                        key={`${t.fdi}-${i}`}
+                        className="rounded-lg border border-slate-200 px-2.5 py-1 font-mono text-[12px] text-slate-600"
+                      >
+                        <span className="font-semibold text-ink">FDI {t.fdi}</span>
+                        {t.confidence != null && <span className="ml-1.5">{t.confidence.toFixed(0)}%</span>}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-3 text-[12.5px] text-slate-500">
+                    Model AI tidak mengembalikan data gigi untuk citra ini.
+                  </p>
+                )}
               </div>
 
               <div>
-                <h3 className="readout">KANDIDAT HASIL COCOK</h3>
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="readout">KANDIDAT HASIL COCOK</h3>
+                  <span className="chip bg-amber-50 text-amber-700 ring-1 ring-amber-200">
+                    <FlaskConical className="h-3 w-3" />
+                    DATA SIMULASI
+                  </span>
+                </div>
+                <p className="mt-1 text-[11.5px] text-slate-400">
+                  Pencocokan dengan data ante-mortem belum tersedia di backend — kandidat di bawah hanya contoh.
+                </p>
                 <ul className="mt-2.5 space-y-2.5">
                   {result.candidates.map((c) => {
                     const s = STATUS_STYLE[c.status]
@@ -268,15 +311,26 @@ export default function Identify() {
                 </ul>
               </div>
 
-              {topCandidate && (
-                <Link
-                  to="/review"
-                  className="inline-flex items-center gap-1.5 text-[13.5px] font-semibold text-teal-700 hover:text-teal-800"
-                >
-                  Kirim hasil ke Forensic Review
-                  <ArrowUpRight className="h-4 w-4" />
-                </Link>
-              )}
+              <div className="flex flex-wrap gap-x-6 gap-y-2">
+                {result.imageId && (
+                  <Link
+                    to={`/analysis?image=${result.imageId}`}
+                    className="inline-flex items-center gap-1.5 text-[13.5px] font-semibold text-teal-700 hover:text-teal-800"
+                  >
+                    Lihat di Feature analysis
+                    <ArrowUpRight className="h-4 w-4" />
+                  </Link>
+                )}
+                {topCandidate && (
+                  <Link
+                    to="/review"
+                    className="inline-flex items-center gap-1.5 text-[13.5px] font-semibold text-teal-700 hover:text-teal-800"
+                  >
+                    Kirim hasil ke Forensic Review
+                    <ArrowUpRight className="h-4 w-4" />
+                  </Link>
+                )}
+              </div>
             </div>
           )}
         </section>
@@ -332,6 +386,7 @@ export default function Identify() {
                 {history.map((item) => {
                   const topMatch = item.result?.candidates?.[0]
                   const s = topMatch ? STATUS_STYLE[topMatch.status] : null
+                  const quality = item.result?.imageQuality?.score
                   return (
                     <tr key={item.id} className="hover:bg-slate-50/60">
                       <td className="px-4 py-3.5 font-mono text-[12.5px] font-semibold text-teal-700">
@@ -358,7 +413,7 @@ export default function Identify() {
                         {topMatch ? `${topMatch.confidence}%` : '-'}
                       </td>
                       <td className="px-4 py-3.5 font-mono text-[12.5px] text-slate-600">
-                        {item.result?.imageQuality?.score}/100
+                        {quality != null ? `${quality}/100` : '–'}
                       </td>
                       <td className="px-4 py-3.5">
                         {s && (

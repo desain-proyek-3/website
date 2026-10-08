@@ -1,7 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react'
 import {
   login as authLogin,
-  signUp as authSignUp,
   logout as authLogout,
   fetchCurrentUser,
   hasToken,
@@ -43,20 +42,13 @@ export function AuthProvider({ children }) {
     return profile
   }, [])
 
-  // Still mock — see integration.md §2.
-  const signUp = useCallback(({ name, email, password }) => {
-    const session = authSignUp({ name, email, password })
-    setUser(session)
-    return session
-  }, [])
-
   const logout = useCallback(() => {
     authLogout()
     setUser(null)
   }, [])
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, signUp, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, logout }}>
       {children}
     </AuthContext.Provider>
   )
