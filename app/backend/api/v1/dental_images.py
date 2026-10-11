@@ -3,8 +3,9 @@ Dentify API v1 — Dental Images Endpoints
 Manajemen citra klinis intraoral gigi: upload ke MinIO, penyimpanan metadata & hash SHA-256,
 pengambilan metadata dengan presigned URL aman, serta soft-delete data forensik.
 Role akses:
-- Admin & Examiner: Upload (POST), Soft-delete (DELETE)
-- Semua role (termasuk Viewer): GET detail citra, GET list citra per subjek
+- Admin & Examiner: Upload (POST), Soft-delete (DELETE) untuk citra subjek post-mortem
+- Admin saja: Upload & Soft-delete citra milik subjek ante-mortem
+- Semua role (termasuk Viewer): GET detail citra, GET list citra per subjek, GET tooth-records per citra
 """
 
 import os
@@ -28,15 +29,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
-from dependencies.auth import get_current_user, require_role
+from dependencies.auth import ensure_can_modify_subject_type, get_current_user, require_role
 from models.dental_image import DentalImage
 from models.subject import Subject
+from models.tooth_record import ToothRecord
 from models.user import User
 from schemas.dental_image import (
     DentalImageListResponse,
     DentalImageResponse,
     ViewType,
 )
+from schemas.tooth_record import ToothRecordListResponse, ToothRecordResponse
 from services.storage_service import storage_service
 
 router = APIRouter(tags=["Dental Images"])
@@ -81,6 +84,8 @@ async def upload_dental_image(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Subjek dengan ID '{subject_id}' tidak ditemukan atau telah dihapus",
         )
+
+    ensure_can_modify_subject_type(current_user, subject.subject_type)
 
     # 2. Validasi tipe konten berkas
     content_type = file.content_type or ""
@@ -241,6 +246,9 @@ async def delete_dental_image(
             detail="Citra gigi tidak ditemukan atau telah dihapus",
         )
 
+    subject_type = await db.scalar(select(Subject.subject_type).where(Subject.id == image.subject_id))
+    ensure_can_modify_subject_type(current_user, subject_type)
+
     now = datetime.now(timezone.utc)
     image.is_deleted = True
     image.deleted_at = now
@@ -299,4 +307,44 @@ async def get_subject_images(
     return DentalImageListResponse(
         items=items,
         total=len(items),
+    )
+
+
+@router.get(
+    "/dental-images/{id}/tooth-records",
+    response_model=ToothRecordListResponse,
+    summary="List Tooth Records by Image",
+    description=(
+        "Mendapatkan hasil deteksi per gigi (FDI, bbox, landmarks, morfologi, confidence) "
+        "untuk satu citra, diurutkan berdasarkan nomor FDI. Kosong bila citra belum "
+        "diproses AI atau inferensinya gagal. Dapat diakses semua role."
+    ),
+)
+async def get_image_tooth_records(
+    id: UUID,
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ToothRecordListResponse:
+    """Ambil daftar tooth_records milik satu citra aktif."""
+    img_stmt = select(DentalImage).where(DentalImage.id == id, DentalImage.is_deleted == False)
+    image = (await db.execute(img_stmt)).scalar_one_or_none()
+    if not image:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Citra gigi tidak ditemukan atau telah dihapus",
+        )
+
+    stmt = (
+        select(ToothRecord)
+        .where(ToothRecord.dental_image_id == id)
+        .order_by(ToothRecord.fdi_number.asc())
+    )
+    records = list((await db.execute(stmt)).scalars().all())
+
+    request.state.resource_id = image.id
+
+    return ToothRecordListResponse(
+        items=[ToothRecordResponse.model_validate(r) for r in records],
+        total=len(records),
     )

@@ -1,116 +1,92 @@
 /**
- * Mock authentication helpers backed by localStorage.
+ * Authentication helpers.
  *
- * All user records live in localStorage under the key "dentify_users".
- * The currently logged-in session is stored under "dentify_session".
+ *   POST /api/v1/auth/login  (JSON { username, password }) → { access_token, token_type }
+ *   GET  /api/v1/auth/me     (Bearer token)                → { id, username, email, role, full_name, is_active, created_at }
+ *
+ * The JWT is stored by api.js (localStorage "dentify_token"); the user profile
+ * is never persisted — it is re-fetched from /auth/me on every page load.
+ *
+ * There is no self-signup: accounts are created by an admin on /users.
  */
 
-const USERS_KEY = 'dentify_users'
-const SESSION_KEY = 'dentify_session'
+import { ApiError, apiFetch, clearToken, getToken, setToken } from './api.js'
 
-export const AVAILABLE_ROLES = [
-  'Field Technician',
-  'Forensic Odontologist',
-  'DVI Team Specialist',
-  'Posko Officer / Admin',
+// Legacy mock keys — only cleared now, no longer read.
+const LEGACY_KEYS = ['dentify_session', 'dentify_users']
+
+// The three backend roles (enum user_role), with UI labels.
+export const ROLES = [
+  {
+    value: 'admin',
+    label: 'Admin',
+    desc: 'Mengelola akun pengguna dan seluruh data.',
+  },
+  {
+    value: 'examiner',
+    label: 'Examiner',
+    desc: 'Membuat subjek, mengunggah citra, dan menjalankan AI.',
+  },
+  {
+    value: 'viewer',
+    label: 'Viewer',
+    desc: 'Hanya dapat melihat data.',
+  },
 ]
 
-function getUsers() {
+export const PASSWORD_MIN_LENGTH = 8
+
+export function roleLabel(role) {
+  return ROLES.find((r) => r.value === role)?.label || role
+}
+
+/** Up to two initials for an avatar, e.g. "Administrator Dentify" → "AD". */
+export function initialsOf(name) {
+  const words = (name || '').trim().split(/\s+/).filter(Boolean)
+  if (!words.length) return '?'
+  return words.slice(0, 2).map((w) => w[0]).join('').toUpperCase()
+}
+
+/**
+ * Fetch the profile of the user owning the stored token.
+ */
+export function fetchCurrentUser() {
+  return apiFetch('/api/v1/auth/me')
+}
+
+/**
+ * Authenticate against the backend, store the JWT, then load the profile.
+ * @returns {Promise<object>} the /auth/me payload
+ */
+export async function login({ username, password }) {
+  let token
   try {
-    return JSON.parse(localStorage.getItem(USERS_KEY)) || []
-  } catch {
-    return []
-  }
-}
-
-function saveUsers(users) {
-  localStorage.setItem(USERS_KEY, JSON.stringify(users))
-}
-
-function generateId() {
-  return `user_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
-}
-
-function getInitials(name) {
-  if (!name) return 'U'
-  return name
-    .trim()
-    .split(' ')
-    .filter(Boolean)
-    .map((w) => w[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2)
-}
-
-/**
- * Register a new user.
- */
-export function signUp({ name, email, password, role }) {
-  const users = getUsers()
-
-  if (users.some((u) => u.email.toLowerCase() === email.toLowerCase())) {
-    throw new Error('Email sudah terdaftar. Silakan login.')
+    token = await apiFetch('/api/v1/auth/login', {
+      method: 'POST',
+      json: { username, password },
+      skipAuthRedirect: true,
+    })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      throw new ApiError('Username atau password salah.', 401)
+    }
+    throw err
   }
 
-  const selectedRole = role || 'Field Technician'
-
-  const user = {
-    id: generateId(),
-    name,
-    email: email.toLowerCase(),
-    password,
-    role: selectedRole,
-    initials: getInitials(name),
+  setToken(token.access_token)
+  try {
+    return await fetchCurrentUser()
+  } catch (err) {
+    clearToken()
+    throw err
   }
-
-  users.push(user)
-  saveUsers(users)
-
-  const session = { id: user.id, name: user.name, email: user.email, role: user.role, initials: user.initials }
-  localStorage.setItem(SESSION_KEY, JSON.stringify(session))
-
-  return session
-}
-
-/**
- * Authenticate an existing user.
- */
-export function login({ email, password, role }) {
-  const users = getUsers()
-  const userIndex = users.findIndex(
-    (u) => u.email.toLowerCase() === email.toLowerCase() && u.password === password,
-  )
-
-  if (userIndex === -1) {
-    throw new Error('Email atau password salah.')
-  }
-
-  const user = users[userIndex]
-  if (role && role !== user.role) {
-    user.role = role
-    users[userIndex] = user
-    saveUsers(users)
-  }
-
-  const session = { id: user.id, name: user.name, email: user.email, role: user.role, initials: user.initials }
-  localStorage.setItem(SESSION_KEY, JSON.stringify(session))
-
-  return session
 }
 
 export function logout() {
-  localStorage.removeItem(SESSION_KEY)
+  clearToken()
+  LEGACY_KEYS.forEach((k) => localStorage.removeItem(k))
 }
 
-export function getCurrentUser() {
-  try {
-    return JSON.parse(localStorage.getItem(SESSION_KEY)) || null
-  } catch {
-    return null
-  }
-}
-
-export function isAuthenticated() {
-  return getCurrentUser() !== null
+export function hasToken() {
+  return Boolean(getToken())
 }

@@ -3,8 +3,8 @@ context.md
 be-handover.md
 fe.md
 guide.md
+integration.md
 img
-.env
 
 # Frontend
 app/frontend/.env
@@ -20,12 +20,14 @@ app/frontend/*.local
 # Backend
 app/backend/.env
 app/backend/venv/
+app/backend/.venv/
 app/backend/__pycache__/
 app/backend/core/__pycache__/
 app/backend/models/__pycache__/
 app/backend/services/__pycache__/
 app/backend/api/v1/__pycache__/
 app/backend/dependencies/__pycache__/
+app/backend/middleware/__pycache__/
 app/backend/schemas/__pycache__/
 app/backend/tests/__pycache__/
 

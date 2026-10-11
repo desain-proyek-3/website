@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = True
 
+    # ── CORS ────────────────────────────────────────────────────────
+    # Origin frontend yang diizinkan. Di .env tulis sebagai JSON list, mis.
+    # CORS_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173"]
+    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
 
 # Singleton instance — import ini dari mana saja
 settings = Settings()

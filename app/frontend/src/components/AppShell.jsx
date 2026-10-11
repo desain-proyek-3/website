@@ -5,6 +5,7 @@ import {
   Bell,
   CheckCircle2,
   ChevronRight,
+  Database,
   Clock,
   Edit3,
   LayoutGrid,
@@ -13,11 +14,13 @@ import {
   Search,
   ShieldCheck,
   UploadCloud,
+  Users,
   Waves,
   X,
 } from 'lucide-react'
 import Logo from './Logo.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
+import { initialsOf, roleLabel } from '../lib/auth.js'
 import { usePosko } from '../context/PoskoContext.jsx'
 import { CASE } from '../lib/data.js'
 
@@ -26,6 +29,8 @@ const NAV = [
   { to: '/dashboard', label: 'Match dashboard', icon: LayoutGrid, meta: '128 pairs' },
   { to: '/review', label: 'Forensic review', icon: ShieldCheck, meta: '14 waiting' },
   { to: '/analysis', label: 'Feature analysis', icon: Activity, meta: 'live' },
+  { to: '/am-records', label: 'Data ante-mortem', icon: Database, meta: 'admin', roles: ['admin'] },
+  { to: '/users', label: 'Manajemen user', icon: Users, meta: 'admin', roles: ['admin'] },
 ]
 
 const TITLES = {
@@ -33,6 +38,8 @@ const TITLES = {
   '/dashboard': { h: 'Match dashboard', s: 'Rekam ante-mortem dan post-mortem yang dipasangkan oleh engine' },
   '/review': { h: 'Forensic review', s: 'Hasil cocok yang memerlukan konfirmasi anggota tim' },
   '/analysis': { h: 'Feature extraction', s: 'Pengukuran tingkat gigi dari radiograf post-mortem' },
+  '/am-records': { h: 'Data ante-mortem', s: 'Input data gigi semasa hidup sebagai pembanding pencocokan' },
+  '/users': { h: 'Manajemen user', s: 'Kelola akun petugas, role, dan status aktif' },
 }
 
 const INITIAL_NOTIFICATIONS = [
@@ -62,7 +69,7 @@ const INITIAL_NOTIFICATIONS = [
   },
 ]
 
-function SidebarBody({ user, onLogout, posko }) {
+function SidebarBody({ user, posko }) {
   return (
     <div className="flex h-full flex-col bg-white text-slate-700">
       {/* Top Header Logo in Sidebar */}
@@ -85,7 +92,7 @@ function SidebarBody({ user, onLogout, posko }) {
 
       {/* Navigation Links */}
       <nav className="flex-1 space-y-1 px-3 py-2">
-        {NAV.map(({ to, label, icon: Icon, meta }) => (
+        {NAV.filter((n) => !n.roles || n.roles.includes(user?.role)).map(({ to, label, icon: Icon, meta }) => (
           <NavLink
             key={to}
             to={to}
@@ -114,26 +121,6 @@ function SidebarBody({ user, onLogout, posko }) {
           </NavLink>
         ))}
       </nav>
-
-      {/* Sidebar Footer User Profile */}
-      <div className="border-t border-slate-100 p-4 bg-slate-50/50">
-        <div className="flex items-center gap-3">
-          <span className="grid h-9 w-9 place-items-center rounded-full bg-teal-700 font-mono text-[12px] font-bold text-white shadow-sm">
-            {user?.initials || 'AK'}
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-[13px] font-semibold text-ink">{user?.name || 'Alicia Kiyoumi'}</div>
-            <div className="truncate text-[11px] font-medium text-teal-700">{user?.role || 'Field Technician'}</div>
-          </div>
-          <button
-            onClick={onLogout}
-            title="Logout"
-            className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition-colors"
-          >
-            <LogOut className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
     </div>
   )
 }
@@ -266,16 +253,19 @@ export default function AppShell() {
             </div>
 
             {/* Account Profile Badge in Header */}
-            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-1.5 pr-3 shadow-sm">
+            <div
+              className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-1.5 pr-3 shadow-sm"
+              title={user ? `${user.username} · ${user.email}` : undefined}
+            >
               <span className="grid h-9 w-9 place-items-center rounded-lg bg-teal-700 font-mono text-[13px] font-bold text-white shadow-sm">
-                {user?.initials || 'AK'}
+                {initialsOf(user?.full_name || user?.username)}
               </span>
-              <div className="text-left">
+              <div className="min-w-0 max-w-[200px] text-left">
                 <div className="truncate text-[13px] font-semibold text-ink leading-tight">
-                  {user?.name || 'Alicia Kiyoumi'}
+                  {user?.full_name || user?.username}
                 </div>
                 <div className="truncate text-[11px] font-medium text-teal-700 leading-tight">
-                  {user?.role || 'Field Technician'}
+                  {roleLabel(user?.role)}
                 </div>
               </div>
               <button
@@ -359,7 +349,7 @@ export default function AppShell() {
         {/* Pure White Collapsible Sidebar (No backdrop mask, no page freeze!) */}
         {open && (
           <aside className="w-[272px] shrink-0 border-r border-slate-200 bg-white shadow-sm transition-all duration-200">
-            <SidebarBody user={user} onLogout={handleLogout} posko={posko} />
+            <SidebarBody user={user} posko={posko} />
           </aside>
         )}
 

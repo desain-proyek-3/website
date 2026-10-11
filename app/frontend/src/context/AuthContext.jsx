@@ -1,26 +1,45 @@
-import { createContext, useContext, useState, useCallback } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect } from 'react'
 import {
   login as authLogin,
-  signUp as authSignUp,
   logout as authLogout,
-  getCurrentUser,
+  fetchCurrentUser,
+  hasToken,
 } from '../lib/auth.js'
+import { onUnauthorized } from '../lib/api.js'
 
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(() => getCurrentUser())
+  const [user, setUser] = useState(null)
+  // true while a stored token is being validated against /auth/me on load
+  const [loading, setLoading] = useState(() => hasToken())
 
-  const login = useCallback(({ email, password }) => {
-    const session = authLogin({ email, password })
-    setUser(session)
-    return session
+  // Any 401 from a protected endpoint drops the session; ProtectedRoute then
+  // redirects to /login.
+  useEffect(() => onUnauthorized(() => setUser(null)), [])
+
+  useEffect(() => {
+    if (!hasToken()) return
+    let cancelled = false
+    fetchCurrentUser()
+      .then((profile) => {
+        if (!cancelled) setUser(profile)
+      })
+      .catch(() => {
+        if (!cancelled) setUser(null)
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  const signUp = useCallback(({ name, email, password }) => {
-    const session = authSignUp({ name, email, password })
-    setUser(session)
-    return session
+  const login = useCallback(async ({ username, password }) => {
+    const profile = await authLogin({ username, password })
+    setUser(profile)
+    return profile
   }, [])
 
   const logout = useCallback(() => {
@@ -29,7 +48,7 @@ export function AuthProvider({ children }) {
   }, [])
 
   return (
-    <AuthContext.Provider value={{ user, login, signUp, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, logout }}>
       {children}
     </AuthContext.Provider>
   )

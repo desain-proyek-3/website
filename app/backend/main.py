@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.v1.router import api_router as api_v1_router
@@ -64,6 +65,15 @@ app = FastAPI(
 
 # ── Middleware ──────────────────────────────────────────────────────
 app.add_middleware(AuditLogMiddleware)
+# CORS ditambahkan terakhir agar menjadi middleware terluar — preflight OPTIONS
+# dijawab sebelum masuk audit log, dan header CORS tetap ada di response error.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=False,  # token dikirim via header Authorization, bukan cookie
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 
