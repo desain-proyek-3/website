@@ -1,8 +1,7 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Activity,
-  AlertOctagon,
   AlertTriangle,
   ArrowUpRight,
   BrainCircuit,
@@ -14,20 +13,23 @@ import {
   Filter,
   Layers,
   RefreshCw,
-  TrendingUp,
   Users,
   Zap,
 } from 'lucide-react'
 import RadialGauge from '../components/RadialGauge.jsx'
 import MeterBar from '../components/MeterBar.jsx'
+import SimBadge from '../components/SimBadge.jsx'
 import {
-  AI_CANDIDATE_TRIAGE,
-  AI_INSIGHTS,
-  ACTIVITY_LOG,
-  CASE,
-  COMPARISON,
-  MATCH_PROGRESS,
-} from '../lib/data.js'
+  MATCH_THRESHOLDS,
+  MATCH_TIER_NOTE,
+  getStatsSummary,
+  listMatchingResults,
+  toCandidate,
+} from '../lib/api.js'
+import { AI_INSIGHTS, ACTIVITY_LOG, COMPARISON } from '../lib/data.js'
+
+// Pending candidates fetched for the triage matrix (newest first).
+const TRIAGE_FETCH_LIMIT = 100
 
 /* ─── State style map ─────────────────────────────────────────── */
 const STATE_STYLES = {
@@ -43,29 +45,39 @@ const LOG_STATUS = {
   attention: { dot: 'bg-signal-rose', text: 'text-rose-600', label: 'Attention' },
 }
 
+// Keyed by matchTier() — same thresholds as Identify & Review.
 const TIER_STYLES = {
-  high: {
+  match: {
     badge: 'bg-teal-50 text-teal-700 border-teal-200',
-    bar: 'bg-teal-600',
     text: 'text-teal-700',
-    label: 'High Match (≥79%)',
+    label: `High Match (≥${MATCH_THRESHOLDS.match}%)`,
   },
-  borderline: {
+  review: {
     badge: 'bg-amber-50 text-amber-700 border-amber-200',
-    bar: 'bg-signal-amber',
     text: 'text-amber-600',
-    label: 'Borderline (50–78%)',
+    label: `Borderline (${MATCH_THRESHOLDS.review}–${MATCH_THRESHOLDS.match - 1}%)`,
   },
-  excluded: {
+  conflict: {
     badge: 'bg-rose-50 text-rose-700 border-rose-200',
-    bar: 'bg-signal-rose',
     text: 'text-rose-600',
-    label: 'Auto-Excluded (<50%)',
+    label: `Excluded (<${MATCH_THRESHOLDS.review}%)`,
   },
 }
 
+const TIER_FILTERS = [
+  { key: 'match', label: `High Match ≥${MATCH_THRESHOLDS.match}%`,
+    on: 'bg-teal-700 text-white shadow-sm', off: 'border border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100' },
+  { key: 'review', label: `Borderline ${MATCH_THRESHOLDS.review}–${MATCH_THRESHOLDS.match - 1}%`,
+    on: 'bg-signal-amber text-white shadow-sm', off: 'border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100' },
+  { key: 'conflict', label: `Excluded <${MATCH_THRESHOLDS.review}%`,
+    on: 'bg-rose-600 text-white shadow-sm', off: 'border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100' },
+]
+
+const ratio = (part, whole) => (whole ? Math.round((part / whole) * 100) : 0)
+const num = (v) => (v == null ? '–' : v)
+
 /* ─── Stat Card ───────────────────────────────────────────────── */
-function Stat({ icon: Icon, label, value, sub, trend }) {
+function Stat({ icon: Icon, label, value, sub }) {
   return (
     <div className="card group flex items-start gap-4 p-5 transition-shadow hover:shadow-lift">
       <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-teal-50 text-teal-700 transition-colors group-hover:bg-teal-100">
@@ -74,10 +86,7 @@ function Stat({ icon: Icon, label, value, sub, trend }) {
       <div className="min-w-0 flex-1">
         <div className="text-[13px] text-slate-500">{label}</div>
         <div className="mt-0.5 font-mono text-[22px] font-semibold leading-none text-ink">{value}</div>
-        <div className="mt-1.5 flex items-center gap-1.5 truncate text-[12px] text-slate-400">
-          {trend && <TrendingUp className="h-3 w-3 shrink-0 text-teal-500" />}
-          {sub}
-        </div>
+        <div className="mt-1.5 truncate text-[12px] text-slate-400">{sub}</div>
       </div>
     </div>
   )
@@ -159,44 +168,111 @@ function LogRow({ entry, isLast }) {
 
 /* ─── Page ────────────────────────────────────────────────────── */
 export default function Dashboard() {
-  const { completed, pending, pairsResolved, pairsTotal, meters } = MATCH_PROGRESS
+  const [stats, setStats] = useState(null)
+  const [pendingResults, setPendingResults] = useState(null) // { items, total }
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const [filterTier, setFilterTier] = useState('all')
 
+  // Each source fails independently, so one broken request doesn't blank the page.
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    const [statsRes, pendingRes] = await Promise.allSettled([
+      getStatsSummary(),
+      listMatchingResults({ status: 'pending_review', limit: TRIAGE_FETCH_LIMIT }),
+    ])
+    if (statsRes.status === 'fulfilled') setStats(statsRes.value)
+    if (pendingRes.status === 'fulfilled') setPendingResults(pendingRes.value)
+    const failed = [statsRes, pendingRes].find((r) => r.status === 'rejected')
+    if (failed) setError(failed.reason?.message || 'Gagal memuat data dashboard.')
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  // ── Derived metrics ──
+  const subjects = stats?.subjects
+  const embeddings = stats?.embeddings
+  const jobs = stats?.inference_jobs
+  const matches = stats?.matching_results
+  const decided = matches ? matches.confirmed + matches.rejected : 0
+  const totalPairs = matches ? decided + matches.pending_review : 0
+  const totalJobs = jobs ? jobs.pending + jobs.processing + jobs.completed + jobs.failed : 0
+
+  const meters = stats
+    ? [
+        {
+          label: 'Subjek PM ber-embedding',
+          value: ratio(embeddings.post_mortem, subjects.post_mortem),
+          hint: `${embeddings.post_mortem} dari ${subjects.post_mortem} subjek PM siap dicocokkan`,
+          tone: 'teal',
+        },
+        {
+          label: 'Subjek AM ber-embedding',
+          value: ratio(embeddings.ante_mortem, subjects.ante_mortem),
+          hint: `${embeddings.ante_mortem} dari ${subjects.ante_mortem} subjek AM tersedia sebagai pembanding`,
+          tone: 'teal',
+        },
+        {
+          label: 'Job inferensi AI selesai',
+          value: ratio(jobs.completed, totalJobs),
+          hint: `${jobs.completed} selesai · ${jobs.failed} gagal · ${jobs.pending + jobs.processing} berjalan`,
+          tone: jobs.failed > 0 ? 'amber' : 'teal',
+        },
+      ]
+    : []
+
+  const candidates = (pendingResults?.items ?? [])
+    .map((r) => ({ ...toCandidate(r), pmSubjectId: r.pm_subject_id, pm: r.pm_subject, cosine: r.cosine_similarity }))
+    .sort((a, b) => b.confidence - a.confidence)
+  const tierCount = (tier) => candidates.filter((c) => c.status === tier).length
   const filteredCandidates = (
-    filterTier === 'all'
-      ? AI_CANDIDATE_TRIAGE
-      : AI_CANDIDATE_TRIAGE.filter((c) => c.tier === filterTier)
+    filterTier === 'all' ? candidates : candidates.filter((c) => c.status === filterTier)
   ).slice(0, 3)
 
   return (
     <div className="space-y-6">
+      {error && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-rose-50 px-4 py-3">
+          <p className="flex items-center gap-2 text-[13px] font-medium text-rose-700">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            Sebagian data dashboard gagal dimuat: {error}
+          </p>
+          <button onClick={load} disabled={loading} className="btn-ghost h-8 px-3 text-[12px]">
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+            Coba lagi
+          </button>
+        </div>
+      )}
+
       {/* ── Stat strip ──────────────────────────────────────────── */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Stat
           icon={Database}
           label="Post-mortem records"
-          value={CASE.pmRecords}
-          sub="312 scanned · 0 queued"
-          trend
+          value={num(subjects?.post_mortem)}
+          sub={stats ? `${embeddings.post_mortem} ber-embedding · ${stats.dental_images} citra total` : 'Memuat…'}
         />
         <Stat
           icon={Users}
           label="Ante-mortem records"
-          value={CASE.amRecords}
-          sub="from 41 clinics"
-          trend
+          value={num(subjects?.ante_mortem)}
+          sub={stats ? `${embeddings.ante_mortem} ber-embedding` : 'Memuat…'}
         />
         <Stat
           icon={Layers}
-          label="Pairs resolved"
-          value={`${pairsResolved}/${pairsTotal}`}
-          sub="8 still open"
+          label="Pasangan diputuskan"
+          value={stats ? `${decided}/${totalPairs}` : '–'}
+          sub={matches ? `${matches.confirmed} dikonfirmasi · ${matches.rejected} ditolak` : 'Memuat…'}
         />
         <Stat
           icon={AlertTriangle}
           label="Perlu Validasi Lanjutan"
-          value="14"
-          sub="oldest opened 6 hrs ago"
+          value={num(matches?.pending_review)}
+          sub="kandidat menunggu keputusan odontolog"
         />
       </div>
 
@@ -209,26 +285,36 @@ export default function Dashboard() {
               <div className="flex items-center gap-2">
                 <h2 className="text-[17px] font-semibold text-ink">Progress Pencocokan AI</h2>
                 <span className="rounded-full bg-teal-50 px-2 py-0.5 font-mono text-[11px] font-semibold text-teal-700">
-                  CNN + RNN + RAG
+                  pgvector · cosine
                 </span>
               </div>
               <p className="mt-1 text-[13px] text-slate-500">
-                Dari {pairsTotal} pasangan kandidat di{' '}
-                <span className="font-mono text-teal-700">{CASE.id}</span>
+                Dari {stats ? totalPairs : '–'} pasangan kandidat PM ↔ AM yang tersimpan
               </p>
             </div>
-            <button className="btn-ghost h-9 px-3 text-[12.5px]">
-              <RefreshCw className="h-3.5 w-3.5" />
-              Re-evaluate
+            <button onClick={load} disabled={loading} className="btn-ghost h-9 px-3 text-[12.5px]">
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+              Muat ulang
             </button>
           </header>
 
           <div className="mt-6 flex flex-col items-center gap-8 sm:flex-row sm:items-center">
-            <RadialGauge value={completed} pending={pending} label="match completed" />
+            <div className="flex flex-col items-center gap-2">
+              <RadialGauge
+                value={ratio(decided, totalPairs)}
+                pending={ratio(matches?.pending_review ?? 0, totalPairs)}
+                label="pasangan diputuskan"
+              />
+              <p className="text-center text-[11.5px] text-slate-400">
+                Teal: sudah diputuskan · Amber: menunggu review
+              </p>
+            </div>
             <div className="w-full flex-1 space-y-4">
-              {meters.map((m) => (
-                <MeterBar key={m.label} {...m} />
-              ))}
+              {stats ? (
+                meters.map((m) => <MeterBar key={m.label} {...m} />)
+              ) : (
+                <p className="text-[13px] text-slate-400">{loading ? 'Memuat metrik…' : 'Metrik tidak tersedia.'}</p>
+              )}
             </div>
           </div>
 
@@ -236,20 +322,20 @@ export default function Dashboard() {
           <div className="mt-6 flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-slate-100 pt-4 text-[12.5px] text-slate-500">
             <span className="flex items-center gap-2">
               <span className="h-2.5 w-2.5 rounded-full bg-teal-600" />
-              High Match Candidate (≥79%)
+              High Match Candidate (≥{MATCH_THRESHOLDS.match}%)
             </span>
             <span className="flex items-center gap-2">
               <span className="h-2.5 w-2.5 rounded-full bg-signal-amber" />
-              Borderline / Butuh Re-scan (50–78%)
+              Borderline / Butuh Re-scan ({MATCH_THRESHOLDS.review}–{MATCH_THRESHOLDS.match - 1}%)
             </span>
             <span className="flex items-center gap-2">
               <span className="h-2.5 w-2.5 rounded-full bg-signal-rose" />
-              Auto-Excluded (&lt;50%)
+              Auto-Excluded (&lt;{MATCH_THRESHOLDS.review}%)
             </span>
           </div>
         </section>
 
-        {/* AI insights */}
+        {/* AI insights — waits for the Agentic RAG service */}
         <section className="card flex flex-col p-6 xl:col-span-5">
           <header className="flex items-start justify-between gap-4">
             <div className="flex items-center gap-3">
@@ -263,11 +349,12 @@ export default function Dashboard() {
                 </p>
               </div>
             </div>
-            <div className="text-right">
+            <div className="flex flex-col items-end gap-1.5">
+              <SimBadge />
               <div className="font-mono text-[26px] font-semibold leading-none text-teal-700">
                 {AI_INSIGHTS.confidence}%
               </div>
-              <div className="mt-1 text-[11.5px] text-slate-400">confidence</div>
+              <div className="text-[11.5px] text-slate-400">confidence</div>
             </div>
           </header>
 
@@ -316,7 +403,7 @@ export default function Dashboard() {
         </section>
       </div>
 
-      {/* ── NEW: AI Candidate Triage Matrix (Poin No. 3) ───────── */}
+      {/* ── AI Candidate Triage Matrix — pending matching results ── */}
       <section className="card p-6">
         <header className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-5">
           <div>
@@ -325,13 +412,15 @@ export default function Dashboard() {
               <h2 className="text-[17px] font-bold text-ink">Matriks Triase Kandidat AI (Top 3)</h2>
             </div>
             <p className="mt-1 text-[13px] text-slate-500">
-              Hasil pencocokan rekam ante-mortem teratas berdasarkan ranking probabilitas AI
+              Kandidat AM yang menunggu review, diurutkan dari confidence tertinggi
+              {pendingResults && pendingResults.total > pendingResults.items.length &&
+                ` (dari ${pendingResults.items.length} kandidat terbaru, total ${pendingResults.total})`}
             </p>
           </div>
 
           {/* Filter Pills */}
           <div className="flex flex-wrap items-center gap-2">
-            <span className="flex items-center gap-1 text-[12px] font-medium text-slate-400 mr-1">
+            <span className="mr-1 flex items-center gap-1 text-[12px] font-medium text-slate-400">
               <Filter className="h-3.5 w-3.5" /> Filter:
             </span>
             <button
@@ -342,110 +431,107 @@ export default function Dashboard() {
                   : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
               }`}
             >
-              Semua
+              Semua ({candidates.length})
             </button>
-            <button
-              onClick={() => setFilterTier('high')}
-              className={`rounded-lg px-3 py-1.5 text-[12px] font-semibold transition-all ${
-                filterTier === 'high'
-                  ? 'bg-teal-700 text-white shadow-sm'
-                  : 'border border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100'
-              }`}
-            >
-              High Match ≥79% ({AI_CANDIDATE_TRIAGE.filter((c) => c.tier === 'high').length})
-            </button>
-            <button
-              onClick={() => setFilterTier('borderline')}
-              className={`rounded-lg px-3 py-1.5 text-[12px] font-semibold transition-all ${
-                filterTier === 'borderline'
-                  ? 'bg-signal-amber text-white shadow-sm'
-                  : 'border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
-              }`}
-            >
-              Borderline 50–78% ({AI_CANDIDATE_TRIAGE.filter((c) => c.tier === 'borderline').length})
-            </button>
-            <button
-              onClick={() => setFilterTier('excluded')}
-              className={`rounded-lg px-3 py-1.5 text-[12px] font-semibold transition-all ${
-                filterTier === 'excluded'
-                  ? 'bg-rose-600 text-white shadow-sm'
-                  : 'border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
-              }`}
-            >
-              Excluded &lt;50% ({AI_CANDIDATE_TRIAGE.filter((c) => c.tier === 'excluded').length})
-            </button>
+            {TIER_FILTERS.map((f) => (
+              <button
+                key={f.key}
+                onClick={() => setFilterTier(f.key)}
+                className={`rounded-lg px-3 py-1.5 text-[12px] font-semibold transition-all ${
+                  filterTier === f.key ? f.on : f.off
+                }`}
+              >
+                {f.label} ({tierCount(f.key)})
+              </button>
+            ))}
           </div>
         </header>
 
-        {/* Candidate Grid */}
-        <div className="mt-5 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {filteredCandidates.map((cand) => {
-            const style = TIER_STYLES[cand.tier]
-            return (
-              <div
-                key={cand.id}
-                className="flex flex-col justify-between rounded-xl border border-slate-200 bg-white p-4 transition-all hover:border-slate-300 hover:shadow-sm"
-              >
-                <div>
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <h4 className="text-[15px] font-bold text-ink">{cand.name}</h4>
-                      <div className="mt-0.5 font-mono text-[11.5px] text-slate-500">
-                        {cand.id} ↔ <span className="font-bold text-teal-700">{cand.pmId}</span>
+        {filteredCandidates.length === 0 ? (
+          <p className="mt-5 rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-[13px] text-slate-400">
+            {loading
+              ? 'Memuat kandidat…'
+              : candidates.length === 0
+                ? 'Belum ada kandidat yang menunggu review. Jalankan pencarian kandidat AM di halaman Identify.'
+                : 'Tidak ada kandidat pada kategori ini.'}
+          </p>
+        ) : (
+          <div className="mt-5 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {filteredCandidates.map((cand) => {
+              const style = TIER_STYLES[cand.status]
+              return (
+                <div
+                  key={cand.id}
+                  className="flex flex-col justify-between rounded-xl border border-slate-200 bg-white p-4 transition-all hover:border-slate-300 hover:shadow-sm"
+                >
+                  <div>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <h4 className="truncate text-[15px] font-bold text-ink">{cand.name}</h4>
+                        <div className="mt-0.5 truncate font-mono text-[11.5px] text-slate-500">
+                          {cand.amId} ↔{' '}
+                          <span className="font-bold text-teal-700">
+                            {cand.pm?.full_name || cand.pmSubjectId.slice(0, 8)}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <div className={`font-mono text-[20px] font-extrabold ${style.text}`}>
+                          {cand.confidence.toFixed(1)}%
+                        </div>
+                        <span className={`mt-0.5 inline-block rounded-md border px-1.5 py-0.5 font-mono text-[10px] font-bold ${style.badge}`}>
+                          {style.label}
+                        </span>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <div className={`font-mono text-[20px] font-extrabold ${style.text}`}>
-                        {cand.score}%
+
+                    <div className="mt-3.5 grid grid-cols-3 gap-2 rounded-lg bg-slate-50 p-2.5 text-center text-[11px]">
+                      <div>
+                        <span className="block font-mono text-[10px] text-slate-400">RANK</span>
+                        <span className="font-mono font-bold text-slate-700">#{cand.rank ?? '–'}</span>
                       </div>
-                      <span className={`mt-0.5 inline-block rounded-md border px-1.5 py-0.5 font-mono text-[10px] font-bold ${style.badge}`}>
-                        {style.label}
-                      </span>
+                      <div className="border-x border-slate-200">
+                        <span className="block font-mono text-[10px] text-slate-400">COSINE</span>
+                        <span className="font-mono font-bold text-slate-700">
+                          {cand.cosine == null ? '–' : cand.cosine.toFixed(3)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="block font-mono text-[10px] text-slate-400">STATUS</span>
+                        <span className="font-mono font-bold text-amber-600">PENDING</span>
+                      </div>
                     </div>
+
+                    <p className="mt-3 text-[12.5px] leading-snug text-slate-600">{MATCH_TIER_NOTE[cand.status]}</p>
                   </div>
 
-                  {/* Micro Pillar Scores */}
-                  <div className="mt-3.5 grid grid-cols-3 gap-2 rounded-lg bg-slate-50 p-2.5 text-center text-[11px]">
-                    <div>
-                      <span className="block font-mono text-[10px] text-slate-400">CNN</span>
-                      <span className="font-mono font-bold text-slate-700">{cand.cnnScore}%</span>
-                    </div>
-                    <div className="border-x border-slate-200">
-                      <span className="block font-mono text-[10px] text-slate-400">RNN</span>
-                      <span className="font-mono font-bold text-slate-700">{cand.rnnScore}%</span>
-                    </div>
-                    <div>
-                      <span className="block font-mono text-[10px] text-slate-400">RAG</span>
-                      <span className="font-mono font-bold text-slate-700">{cand.ragScore}%</span>
-                    </div>
+                  <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3 text-[11.5px] text-slate-400">
+                    <span className="truncate">{cand.pm?.case_reference || cand.caseReference || '–'}</span>
+                    <Link
+                      to={`/review?pm=${cand.pmSubjectId}`}
+                      className="inline-flex items-center gap-1 font-semibold text-teal-700 hover:text-teal-800"
+                    >
+                      Detail
+                      <ArrowUpRight className="h-3.5 w-3.5" />
+                    </Link>
                   </div>
-
-                  <p className="mt-3 text-[12.5px] leading-snug text-slate-600">{cand.statusNote}</p>
                 </div>
-
-                <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3 text-[11.5px] text-slate-400">
-                  <span className="truncate">{cand.clinic}</span>
-                  <Link
-                    to="/review"
-                    className="inline-flex items-center gap-1 font-semibold text-teal-700 hover:text-teal-800"
-                  >
-                    Detail
-                    <ArrowUpRight className="h-3.5 w-3.5" />
-                  </Link>
-                </div>
-              </div>
-            )
-          })}
-        </div>
+              )
+            })}
+          </div>
+        )}
       </section>
 
-      {/* ── Bottom row: AM vs PM + Activity Log ─────────────────── */}
+      {/* ── Bottom row: AM vs PM + Activity Log (simulated) ─────── */}
       <div className="grid gap-6 xl:grid-cols-12">
-        {/* AM vs PM comparison */}
+        {/* AM vs PM comparison — per-tooth comparison waits for the AI contract */}
         <section className="card p-6 xl:col-span-7">
           <header className="flex flex-wrap items-end justify-between gap-4">
             <div>
-              <h2 className="text-[17px] font-semibold text-ink">Ante-mortem vs post-mortem</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-[17px] font-semibold text-ink">Ante-mortem vs post-mortem</h2>
+                <SimBadge />
+              </div>
               <p className="mt-1 text-[13px] text-slate-500">
                 Pasangan rekam medis <span className="font-mono text-teal-700">PM-0418 ↔ AM-2291</span>
                 {' · '}skor evaluasi{' '}
@@ -489,7 +575,7 @@ export default function Dashboard() {
               <Activity className="h-4 w-4 text-teal-700" />
               <h2 className="text-[17px] font-semibold text-ink">Log Aktivitas Pipeline AI</h2>
             </div>
-            <span className="chip bg-slate-100 text-slate-500">HARI INI</span>
+            <SimBadge />
           </header>
 
           <div className="flex-1 overflow-y-auto scroll-slim">

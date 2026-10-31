@@ -5,6 +5,7 @@ fe.md
 guide.md
 integration.md
 img
+.env
 
 # Frontend
 app/frontend/.env
@@ -15,7 +16,6 @@ app/frontend/dist
 app/frontend/dist-ssr
 app/frontend/.DS_Store
 app/frontend/*.local
-
 
 # Backend
 app/backend/.env

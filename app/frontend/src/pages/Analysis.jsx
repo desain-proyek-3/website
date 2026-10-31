@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   Crosshair,
   Download,
-  FlaskConical,
   Hash,
   ImageOff,
   Lightbulb,
@@ -24,6 +23,7 @@ import {
   listSubjects,
 } from '../lib/api.js'
 import { ACTIVITY_LOG } from '../lib/data.js'
+import SimBadge from '../components/SimBadge.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 
 const BANDS = ['Low', 'Med', 'High']
@@ -36,19 +36,6 @@ const LOG_STATUS = {
   flagged: { cls: 'bg-amber-50 text-amber-700 ring-amber-200', Icon: TriangleAlert, text: 'Flagged for review' },
   attention: { cls: 'bg-rose-50 text-rose-700 ring-rose-200', Icon: TriangleAlert, text: 'Needs re-scan' },
   running: { cls: 'bg-slate-100 text-slate-600 ring-slate-200', Icon: Loader2, text: 'Running' },
-}
-
-function SimBadge({ dark = false }) {
-  return (
-    <span
-      className={`chip whitespace-nowrap ring-1 ${
-        dark ? 'bg-signal-amber/15 text-signal-amber ring-signal-amber/30' : 'bg-amber-50 text-amber-700 ring-amber-200'
-      }`}
-    >
-      <FlaskConical className="h-3 w-3" />
-      DATA SIMULASI
-    </span>
-  )
 }
 
 const pct = (v) => (v == null ? '–' : `${(v <= 1 ? v * 100 : v).toFixed(1)}%`)

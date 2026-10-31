@@ -15,8 +15,8 @@
  *   3. POST /api/v1/inference/trigger      JSON { dental_image_id }  → 202, job { id, status: "pending" }
  *   4. GET  /api/v1/inference/jobs/{id}    poll until status is "completed" | "failed"
  *
- * AM candidate matching has no backend endpoint yet (Pekan 7+), so
- * mockCandidates() below still fabricates that part of the result.
+ * AM candidate matching (Pekan 10):
+ *   5. POST /api/v1/matching-results/run   JSON { pm_subject_id, top_k? }  → top 3 AM candidates
  */
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
@@ -295,30 +295,91 @@ export function normalizeDetectedTeeth(resultPayload) {
     .sort((a, b) => a.fdi - b.fdi)
 }
 
-// ── Mock: AM candidates ──────────────────────────────────────────────────
+// ── Matching (AM candidates) ─────────────────────────────────────────────
+
+// Satu sumber ambang confidence untuk Identify, Review & Dashboard:
+// ≥79% match (high), 50–78% review (borderline), <50% conflict (exclusion).
+export const MATCH_THRESHOLDS = { match: 79, review: 50 }
+
+/** @returns {'match'|'review'|'conflict'} */
+export function matchTier(confidence) {
+  if (confidence >= MATCH_THRESHOLDS.match) return 'match'
+  if (confidence >= MATCH_THRESHOLDS.review) return 'review'
+  return 'conflict'
+}
+
+// Generic, score-based explanation per tier — the backend returns no
+// per-candidate findings, so never imply morphology evidence here.
+export const MATCH_TIER_NOTE = {
+  match: 'Kemiripan embedding tinggi — prioritaskan verifikasi oleh odontolog.',
+  review: 'Kemiripan sedang — perlu perbandingan manual sebelum diputuskan.',
+  conflict: 'Kemiripan rendah — kemungkinan bukan individu yang sama.',
+}
 
 /**
- * MOCK — no matching endpoint exists yet (integration.md §3, Pekan 7+).
- * Returns plausible, deterministic candidates seeded by the uploaded file.
- * Replace with the real matching call once `matching_results` is built.
+ * Run 1:N matching of a post-mortem subject against all active ante-mortem
+ * subjects (pgvector cosine similarity). Backend keeps the top 3 by default
+ * as `pending_review`; 409 = subject has no embedding yet.
+ * @returns {Promise<{ pm_subject_id: string, top_k: number, candidates: object[] }>}
  */
-export function mockCandidates(file) {
-  const seed = Array.from(file.name).reduce((a, c) => a + c.charCodeAt(0), file.size)
-  const base = 68 + (seed % 30) // 68–97
-  return [
-    {
-      amId: 'AM-2291',
-      name: 'Alicia Kiyoumi',
-      confidence: Math.round(base),
-      status: base >= 90 ? 'match' : base >= 78 ? 'review' : 'conflict',
-      notes: 'Crown outline and restoration margin on #26/#36 align with the ante-mortem chart.',
-    },
-    {
-      amId: 'AM-2140',
-      name: 'Jonathan Kosasih',
-      confidence: Math.max(Math.round(base) - 24, 12),
-      status: 'conflict',
-      notes: 'Anterior morphology diverges; unlikely to be the same individual.',
-    },
-  ].sort((a, b) => b.confidence - a.confidence)
+export function runMatching(pmSubjectId, { topK, signal } = {}) {
+  return apiFetch('/api/v1/matching-results/run', {
+    method: 'POST',
+    json: { pm_subject_id: pmSubjectId, ...(topK ? { top_k: topK } : {}) },
+    signal,
+  })
+}
+
+/**
+ * @param {{ pmSubjectId?: string, amSubjectId?: string, status?: 'pending_review'|'confirmed'|'rejected',
+ *           limit?: number, offset?: number }} opts
+ * @returns {Promise<{ items: object[], total: number, limit: number, offset: number }>}
+ */
+export function listMatchingResults({ pmSubjectId, amSubjectId, status, limit = 50, offset = 0 } = {}) {
+  const q = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  if (pmSubjectId) q.set('pm_subject_id', pmSubjectId)
+  if (amSubjectId) q.set('am_subject_id', amSubjectId)
+  if (status) q.set('status', status)
+  return apiFetch(`/api/v1/matching-results?${q}`)
+}
+
+export function getMatchingResult(id) {
+  return apiFetch(`/api/v1/matching-results/${id}`)
+}
+
+/** Odontologist decision; final (409 if already decided). */
+export function confirmMatchingResult(id, decision) {
+  return apiFetch(`/api/v1/matching-results/${id}/confirm`, { method: 'POST', json: { decision } })
+}
+
+/**
+ * Map a backend matching result to the candidate shape the UI (and the
+ * analysis history in localStorage) uses. `status` is the confidence tier;
+ * the reviewer decision lives in `decision`.
+ */
+export function toCandidate(r) {
+  const confidence = r.confidence_score == null ? 0 : Math.round(r.confidence_score * 10) / 10
+  return {
+    id: r.id,
+    amSubjectId: r.am_subject_id,
+    amId: r.am_subject_id.slice(0, 8),
+    name: r.am_subject?.full_name || 'Tanpa nama',
+    caseReference: r.am_subject?.case_reference || null,
+    confidence,
+    rank: r.rank,
+    status: matchTier(confidence),
+    decision: r.status,
+  }
+}
+
+// ── Stats (Dashboard) ────────────────────────────────────────────────────
+
+/**
+ * @returns {Promise<{ subjects: { ante_mortem: number, post_mortem: number }, dental_images: number,
+ *   embeddings: { ante_mortem: number, post_mortem: number },
+ *   inference_jobs: { pending: number, processing: number, completed: number, failed: number },
+ *   matching_results: { pending_review: number, confirmed: number, rejected: number } }>}
+ */
+export function getStatsSummary() {
+  return apiFetch('/api/v1/stats/summary')
 }

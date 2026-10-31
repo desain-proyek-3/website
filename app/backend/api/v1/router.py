@@ -11,6 +11,8 @@ from api.v1.subjects import router as subjects_router
 from api.v1.dental_images import router as dental_images_router
 from api.v1.inference import router as inference_router
 from api.v1.users import router as users_router
+from api.v1.matching_results import router as matching_results_router
+from api.v1.stats import router as stats_router
 
 api_router = APIRouter()
 
@@ -21,4 +23,6 @@ api_router.include_router(subjects_router)
 api_router.include_router(dental_images_router)
 api_router.include_router(inference_router)
 api_router.include_router(users_router)
+api_router.include_router(matching_results_router)
+api_router.include_router(stats_router)
 
