@@ -136,7 +136,11 @@ export default function AppShell() {
   const { user, logout } = useAuth()
   const { posko, setPosko, PRESET_POSKOS } = usePosko()
 
-  const title = TITLES[pathname] ?? TITLES['/dashboard']
+  const title =
+    TITLES[pathname] ??
+    (pathname.startsWith('/review/report/')
+      ? { h: 'Laporan identifikasi', s: 'Laporan format INTERPOL DVI untuk pasangan PM–AM yang dikonfirmasi' }
+      : TITLES['/dashboard'])
   const unreadCount = notifications.filter((n) => n.unread).length
 
   const handleLogout = () => {
@@ -151,7 +155,7 @@ export default function AppShell() {
   return (
     <div className="min-h-screen bg-canvas flex flex-col">
       {/* Top Sticky Header */}
-      <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur shadow-sm">
+      <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur shadow-sm print:hidden">
         {/* Top Bar Row */}
         <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
           {/* Left: Menu Toggle & Search Bar */}
@@ -348,13 +352,13 @@ export default function AppShell() {
       <div className="flex flex-1 min-w-0">
         {/* Pure White Collapsible Sidebar (No backdrop mask, no page freeze!) */}
         {open && (
-          <aside className="w-[272px] shrink-0 border-r border-slate-200 bg-white shadow-sm transition-all duration-200">
+          <aside className="w-[272px] shrink-0 border-r border-slate-200 bg-white shadow-sm transition-all duration-200 print:hidden">
             <SidebarBody user={user} posko={posko} />
           </aside>
         )}
 
         {/* Main Content Area (Fully interactive, clickable & scrollable) */}
-        <main className="flex-1 min-w-0 px-4 pb-14 pt-6 sm:px-6 lg:px-8">
+        <main className="flex-1 min-w-0 px-4 pb-14 pt-6 sm:px-6 lg:px-8 print:p-0">
           <Outlet />
         </main>
       </div>

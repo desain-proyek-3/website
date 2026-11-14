@@ -19,6 +19,8 @@ import {
 import RadialGauge from '../components/RadialGauge.jsx'
 import MeterBar from '../components/MeterBar.jsx'
 import SimBadge from '../components/SimBadge.jsx'
+import UnprocessedImagesCard from '../components/UnprocessedImagesCard.jsx'
+import { useAuth } from '../context/AuthContext.jsx'
 import {
   MATCH_THRESHOLDS,
   MATCH_TIER_NOTE,
@@ -168,6 +170,7 @@ function LogRow({ entry, isLast }) {
 
 /* ─── Page ────────────────────────────────────────────────────── */
 export default function Dashboard() {
+  const { user } = useAuth()
   const [stats, setStats] = useState(null)
   const [pendingResults, setPendingResults] = useState(null) // { items, total }
   const [loading, setLoading] = useState(true)
@@ -275,6 +278,9 @@ export default function Dashboard() {
           sub="kandidat menunggu keputusan odontolog"
         />
       </div>
+
+      {/* ── Images still waiting for AI (Pekan 12) ──────────────── */}
+      <UnprocessedImagesCard role={user?.role} onQueued={load} />
 
       {/* ── Middle row: Matching progress + AI insights ─────────── */}
       <div className="grid gap-6 xl:grid-cols-12">

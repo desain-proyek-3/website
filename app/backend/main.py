@@ -46,6 +46,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[WARN] MinIO initialization error: {e}")
 
+    # Job AI yang tertinggal dari proses sebelumnya tidak akan pernah selesai
+    try:
+        from api.v1.inference import recover_interrupted_jobs
+        recovered = await recover_interrupted_jobs()
+        if recovered:
+            print(f"[WARN] {recovered} job inferensi tertinggal (pending/processing) ditandai failed.")
+    except Exception as e:
+        print(f"[WARN] Pemulihan job inferensi gagal: {e}")
+
     yield
     # Shutdown
     print("[INFO] Shutting down Dentify API.")

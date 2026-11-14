@@ -11,7 +11,7 @@ Role akses:
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import (
@@ -20,11 +20,12 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     UploadFile,
     status,
 )
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,9 +38,12 @@ from models.user import User
 from schemas.dental_image import (
     DentalImageListResponse,
     DentalImageResponse,
+    UnprocessedImage,
+    UnprocessedImageListResponse,
     ViewType,
 )
 from schemas.tooth_record import ToothRecordListResponse, ToothRecordResponse
+from services.inference_status import ai_status_for_images, completed_job_exists
 from services.storage_service import storage_service
 
 router = APIRouter(tags=["Dental Images"])
@@ -185,6 +189,81 @@ async def upload_dental_image(
 
 
 @router.get(
+    "/dental-images/unprocessed",
+    response_model=UnprocessedImageListResponse,
+    summary="List Images Not Yet Processed by AI",
+    description=(
+        "Daftar citra aktif (subjek aktif) yang belum pernah berhasil diproses AI — tidak "
+        "punya job inferensi 'completed' (belum pernah dijalankan, masih berjalan, atau "
+        "gagal). Untuk memproses ulang dataset lama lewat POST /inference/batch. "
+        "Dapat diakses semua role."
+    ),
+)
+async def list_unprocessed_images(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    subject_type: Literal["ante_mortem", "post_mortem"] | None = Query(None, description="Filter tipe subjek"),
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> UnprocessedImageListResponse:
+    base = (
+        select(DentalImage, Subject)
+        .join(Subject, Subject.id == DentalImage.subject_id)
+        .where(
+            DentalImage.is_deleted == False,
+            Subject.is_deleted == False,
+            ~completed_job_exists(),
+        )
+    )
+
+    counts = {"ante_mortem": 0, "post_mortem": 0}
+    for st, n in (
+        await db.execute(
+            select(Subject.subject_type, func.count(DentalImage.id))
+            .join(Subject, Subject.id == DentalImage.subject_id)
+            .where(DentalImage.is_deleted == False, Subject.is_deleted == False, ~completed_job_exists())
+            .group_by(Subject.subject_type)
+        )
+    ).all():
+        counts[st] = n
+
+    stmt = base
+    if subject_type:
+        stmt = stmt.where(Subject.subject_type == subject_type)
+    rows = (
+        await db.execute(
+            stmt.order_by(Subject.subject_type, Subject.created_at, DentalImage.uploaded_at, DentalImage.id)
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+
+    statuses = await ai_status_for_images(db, [img.id for img, _ in rows])
+    items = [
+        UnprocessedImage(
+            id=img.id,
+            subject_id=subj.id,
+            subject_type=subj.subject_type,
+            subject_name=subj.full_name,
+            case_reference=subj.case_reference,
+            view_type=img.view_type,
+            uploaded_at=img.uploaded_at,
+            ai_status=statuses[img.id].status,
+            latest_job_id=statuses[img.id].latest_job_id,
+            ai_error_message=statuses[img.id].error_message,
+        )
+        for img, subj in rows
+    ]
+    return UnprocessedImageListResponse(
+        items=items,
+        total=counts[subject_type] if subject_type else sum(counts.values()),
+        counts=counts,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
     "/dental-images/{id}",
     response_model=DentalImageResponse,
     summary="Get Dental Image Detail",
@@ -214,7 +293,8 @@ async def get_dental_image(
 
     request.state.resource_id = image.id
 
-    response_data = DentalImageResponse.model_validate(image)
+    statuses = await ai_status_for_images(db, [image.id])
+    response_data = DentalImageResponse.model_validate(image).with_ai_status(statuses[image.id])
     response_data.image_url = presigned_url
     return response_data
 
@@ -296,9 +376,10 @@ async def get_subject_images(
     result = await db.execute(stmt)
     images = list(result.scalars().all())
 
+    statuses = await ai_status_for_images(db, [img.id for img in images])
     items: list[DentalImageResponse] = []
     for img in images:
-        item = DentalImageResponse.model_validate(img)
+        item = DentalImageResponse.model_validate(img).with_ai_status(statuses[img.id])
         item.image_url = storage_service.get_presigned_url(img.file_path)
         items.append(item)
 

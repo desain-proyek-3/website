@@ -67,6 +67,15 @@ class Settings(BaseSettings):
     AI_SERVICE_TIMEOUT_SECONDS: float = 30.0
     AI_SERVICE_POLL_INTERVAL_SECONDS: float = 2.0
     AI_SERVICE_MAX_POLL_ATTEMPTS: int = 60
+    # Batas job AI yang diproses bersamaan oleh backend (trigger + polling).
+    # Job lain menunggu berstatus 'pending' — mencegah batch besar membanjiri LXC AI.
+    AI_SERVICE_MAX_CONCURRENT_JOBS: int = 2
+
+    # ── Agentic RAG (laporan INTERPOL) ──────────────────────────────
+    # Kosong = belum dikonfigurasi → laporan dibuat tanpa bagian narasi RAG.
+    RAG_SERVICE_BASE_URL: str = ""
+    RAG_SERVICE_API_KEY: str = ""
+    RAG_SERVICE_TIMEOUT_SECONDS: float = 90.0
 
     # ── JWT (placeholder — diimplementasi di task berikutnya) ──────
     JWT_SECRET_KEY: str = "CHANGE_ME_IN_PRODUCTION"

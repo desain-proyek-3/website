@@ -6,7 +6,7 @@ Layanan pencatatan audit log tamper-evident berbasis cryptographic hash-chaining
 import hashlib
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select, text
@@ -17,6 +17,9 @@ from schemas.audit import AuditVerifyResponse, CorruptedEntry
 
 # Kunci integer 32-bit untuk PostgreSQL transaction advisory lock (mengunci urutan penulisan hash-chain)
 AUDIT_CHAIN_LOCK_KEY = 104729
+
+# Jarak minimum antar-timestamp entri berurutan (presisi timestamptz PostgreSQL)
+MIN_TIMESTAMP_STEP = timedelta(microseconds=1)
 
 
 def compute_entry_hash(
@@ -66,10 +69,12 @@ async def create_audit_entry(
     """
     Mencatat satu entri audit log baru secara atomik.
     Mencegah race condition dengan PostgreSQL transaction advisory lock dan FOR UPDATE.
-    """
-    if timestamp is None:
-        timestamp = datetime.now(timezone.utc)
 
+    Timestamp ditetapkan SETELAH lock diperoleh dan entri terakhir dibaca, lalu dipaksa
+    naik ketat (> timestamp entri terakhir). Dengan begitu urutan timestamp selalu sama
+    dengan urutan rantai hash, sehingga verify_chain_integrity() (yang menelusuri urut
+    timestamp) tidak melapor "rantai terputus" palsu saat request paralel.
+    """
     # 1. Acquire advisory transaction lock untuk menserialisasi penulisan chain
     await db.execute(text(f"SELECT pg_advisory_xact_lock({AUDIT_CHAIN_LOCK_KEY})"))
 
@@ -85,7 +90,14 @@ async def create_audit_entry(
 
     previous_hash = latest_entry.entry_hash if latest_entry else None
 
-    # 3. Hitung hash kanonikal baru
+    # 3. Timestamp monoton: diisi di dalam lock, minimal 1 µs setelah entri terakhir
+    #    (presisi timestamptz PostgreSQL = mikrodetik)
+    if timestamp is None:
+        timestamp = datetime.now(timezone.utc)
+    if latest_entry is not None:
+        timestamp = max(timestamp, latest_entry.timestamp + MIN_TIMESTAMP_STEP)
+
+    # 4. Hitung hash kanonikal baru
     entry_hash = compute_entry_hash(
         previous_hash=previous_hash,
         timestamp=timestamp,
@@ -99,7 +111,7 @@ async def create_audit_entry(
         details=details,
     )
 
-    # 4. Simpan record audit log baru
+    # 5. Simpan record audit log baru
     audit_entry = AuditLog(
         timestamp=timestamp,
         user_id=user_id,

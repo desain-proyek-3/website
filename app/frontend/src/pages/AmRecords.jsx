@@ -7,13 +7,24 @@ import {
   Loader2,
   RotateCcw,
   Search,
+  Sparkles,
   Trash2,
   UserPlus,
   X,
 } from 'lucide-react'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import DentalUploadPanel from '../components/DentalUploadPanel.jsx'
-import { VIEW_TYPES, createSubject, deleteSubject, listSubjectImages, listSubjects } from '../lib/api.js'
+import RunAiButton from '../components/RunAiButton.jsx'
+import {
+  AI_STATUS_LABEL,
+  VIEW_TYPES,
+  createSubject,
+  deleteSubject,
+  isAiRunning,
+  listSubjectImages,
+  listSubjects,
+  triggerInferenceBatch,
+} from '../lib/api.js'
 import { useDentalUpload } from '../lib/useDentalUpload.js'
 
 // Ante-mortem data is admin-only (enforced by the backend too).
@@ -42,6 +53,104 @@ function AngleChips({ views }) {
           </span>
         )
       })}
+    </div>
+  )
+}
+
+const AI_CHIP = {
+  none: 'bg-slate-100 text-slate-600 ring-slate-200',
+  pending: 'bg-sky-50 text-sky-700 ring-sky-200',
+  processing: 'bg-sky-50 text-sky-700 ring-sky-200',
+  completed: 'bg-teal-50 text-teal-700 ring-teal-200',
+  failed: 'bg-rose-50 text-rose-700 ring-rose-200',
+}
+
+/**
+ * Stored images of the selected subject with their AI status, so images saved
+ * without AI (migrated dataset / "Upload tanpa AI") can be processed later.
+ */
+function StoredImagesAi({ subjectId, refreshKey }) {
+  const [images, setImages] = useState(null)
+  const [error, setError] = useState('')
+  const [batchMsg, setBatchMsg] = useState('')
+  const [batchBusy, setBatchBusy] = useState(false)
+  const [reload, setReload] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    setError('')
+    listSubjectImages(subjectId)
+      .then(({ items }) => {
+        if (cancelled) return
+        const order = VIEW_TYPES.map((v) => v.value)
+        setImages([...items].sort((a, b) => order.indexOf(a.view_type) - order.indexOf(b.view_type)))
+      })
+      .catch((err) => !cancelled && setError(err.message))
+    return () => {
+      cancelled = true
+    }
+  }, [subjectId, refreshKey, reload])
+
+  useEffect(() => setBatchMsg(''), [subjectId])
+
+  if (error) return <p className="mt-4 text-[12.5px] text-rose-700">{error}</p>
+  if (!images || images.length === 0) return null
+
+  const pending = images.filter((i) => !i.ai_processed && !isAiRunning(i.ai_status))
+
+  const processAll = async () => {
+    setBatchBusy(true)
+    setBatchMsg('')
+    try {
+      const res = await triggerInferenceBatch(pending.map((i) => i.id))
+      setBatchMsg(`${res.jobs.length} citra masuk antrean AI${res.skipped.length ? `, ${res.skipped.length} dilewati` : ''}.`)
+      setReload((k) => k + 1)
+    } catch (err) {
+      setBatchMsg(err.message)
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  return (
+    <div className="mt-4 rounded-xl border border-slate-200 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-[13px] font-semibold text-ink">Citra tersimpan &amp; status AI</h3>
+        {pending.length > 1 && (
+          <button onClick={processAll} disabled={batchBusy} className="btn-ghost h-8 px-3 text-[12px]">
+            {batchBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+            Proses {pending.length} citra yang belum diproses
+          </button>
+        )}
+      </div>
+      {batchMsg && <p className="mt-2 text-[12px] text-slate-600">{batchMsg}</p>}
+      <ul className="mt-3 divide-y divide-slate-100">
+        {images.map((img) => (
+          <li key={img.id} className="flex flex-wrap items-center justify-between gap-3 py-2.5">
+            <div className="flex items-center gap-2.5">
+              <span className="w-12 font-mono text-[11px] tracking-wider text-slate-500">
+                {(VIEW_TYPES.find((v) => v.value === img.view_type)?.label || img.view_type).toUpperCase()}
+              </span>
+              <span className={`chip ring-1 ${AI_CHIP[img.ai_status] || AI_CHIP.none}`}>
+                {AI_STATUS_LABEL[img.ai_status] || AI_STATUS_LABEL.none}
+              </span>
+              {img.ai_processed && img.ai_status !== 'completed' && (
+                <span className="text-[11px] text-slate-400">(hasil sebelumnya tersedia)</span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              {img.ai_processed && (
+                <Link to={`/analysis?image=${img.id}`} className="text-[12px] font-semibold text-teal-700 hover:text-teal-800">
+                  Lihat hasil
+                </Link>
+              )}
+              {(!img.ai_processed || img.ai_status === 'failed') && (
+                <RunAiButton image={img} canRun size="sm" onDone={() => setReload((k) => k + 1)} />
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
@@ -375,10 +484,13 @@ export default function AmRecords() {
                 </div>
               </div>
 
+              <StoredImagesAi subjectId={selected.id} refreshKey={`${upload.filledViews.join()}|${upload.phase}`} />
+
               <p className="mt-4 text-[12.5px] leading-snug text-slate-500">
                 Citra diproses AI agar deteksi gigi &amp; embedding subjek tersimpan sebagai pembanding untuk
                 pencocokan dengan data post-mortem. Selama layanan AI belum terhubung, gunakan{' '}
-                <span className="font-medium text-slate-600">Upload tanpa AI</span> untuk menyimpan citranya dulu.
+                <span className="font-medium text-slate-600">Upload tanpa AI</span> untuk menyimpan citranya dulu —
+                citra itu bisa diproses belakangan lewat daftar di atas.
               </p>
 
               {/* allowSkipAi: TEMPORARY until the AI service is live — remove afterwards */}
@@ -394,7 +506,8 @@ export default function AmRecords() {
                   <p className="text-[13px] text-amber-900">
                     Citra sudut <span className="font-semibold">{upload.uploaded.view}</span> tersimpan{' '}
                     <span className="font-semibold">tanpa pemrosesan AI</span> — belum ada deteksi gigi maupun
-                    embedding untuk pencocokan. Jalankan AI untuk citra ini setelah layanan AI terhubung.
+                    embedding untuk pencocokan. Jalankan AI untuk citra ini (di sini atau di daftar citra tersimpan)
+                    setelah layanan AI terhubung.
                   </p>
                 </div>
               )}

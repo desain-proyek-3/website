@@ -6,6 +6,8 @@ import {
   CheckCircle2,
   Crosshair,
   Download,
+  FileText,
+  GitCompareArrows,
   Hash,
   ImageOff,
   Lightbulb,
@@ -15,15 +17,24 @@ import {
   UploadCloud,
 } from 'lucide-react'
 import {
+  AI_STATUS_LABEL,
+  ApiError,
   VIEW_TYPES,
   bboxToPixels,
   getDentalImage,
+  getMatchingComparison,
+  getMatchingResult,
   getToothRecords,
+  isAiRunning,
+  listMatchingResults,
   listSubjectImages,
   listSubjects,
+  runMatching,
 } from '../lib/api.js'
 import { ACTIVITY_LOG } from '../lib/data.js'
+import RunAiButton from '../components/RunAiButton.jsx'
 import SimBadge from '../components/SimBadge.jsx'
+import ToothComparisonTable from '../components/ToothComparisonTable.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 
 const BANDS = ['Low', 'Med', 'High']
@@ -42,6 +53,214 @@ const pct = (v) => (v == null ? '–' : `${(v <= 1 ? v * 100 : v).toFixed(1)}%`)
 const confValue = (t) => (t.confidence_score == null ? null : t.confidence_score <= 1 ? t.confidence_score * 100 : t.confidence_score)
 const viewLabel = (v) => VIEW_TYPES.find((x) => x.value === v)?.label || v
 
+const DECISION = {
+  confirmed: { label: 'Dikonfirmasi', cls: 'bg-teal-50 text-teal-700 ring-teal-200' },
+  rejected: { label: 'Ditolak', cls: 'bg-rose-50 text-rose-700 ring-rose-200' },
+  pending_review: { label: 'Menunggu review', cls: 'bg-slate-100 text-slate-600 ring-slate-200' },
+}
+const DECISION_ORDER = { confirmed: 0, pending_review: 1, rejected: 2 }
+
+/**
+ * PM vs AM per-tooth comparison (GET /matching-results/{id}/comparison) for the
+ * selected subject: a PM shows its AM candidates, an AM shows the PMs matched to it.
+ */
+function MorphologyComparison({ subject, selectedId, onSelect, reloadKey, canRunMatching }) {
+  const [results, setResults] = useState([])
+  const [comparison, setComparison] = useState(null)
+  const [onlyDiff, setOnlyDiff] = useState(false)
+  const [loading, setLoading] = useState({ list: false, comparison: false, run: false })
+  const [error, setError] = useState('')
+  const [listKey, setListKey] = useState(0)
+  const isPm = subject?.subject_type === 'post_mortem'
+
+  useEffect(() => {
+    setResults([])
+    setComparison(null)
+    setError('')
+    if (!subject) return
+    let cancelled = false
+    setLoading((l) => ({ ...l, list: true }))
+    listMatchingResults(isPm ? { pmSubjectId: subject.id, limit: 100 } : { amSubjectId: subject.id, limit: 100 })
+      .then(({ items }) => {
+        if (cancelled) return
+        // newest first → keep one row per counterpart subject, then decided pairs first
+        const seen = new Set()
+        const unique = items.filter((r) => {
+          const other = isPm ? r.am_subject_id : r.pm_subject_id
+          if (seen.has(other)) return false
+          seen.add(other)
+          return true
+        })
+        unique.sort((a, b) => DECISION_ORDER[a.status] - DECISION_ORDER[b.status] || (a.rank ?? 99) - (b.rank ?? 99))
+        setResults(unique)
+      })
+      .catch((err) => !cancelled && setError(err.message))
+      .finally(() => !cancelled && setLoading((l) => ({ ...l, list: false })))
+    return () => {
+      cancelled = true
+    }
+  }, [subject?.id, listKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selected = results.find((r) => r.id === selectedId) || results[0] || null
+
+  useEffect(() => {
+    setComparison(null)
+    if (!selected) return
+    let cancelled = false
+    setLoading((l) => ({ ...l, comparison: true }))
+    getMatchingComparison(selected.id)
+      .then((c) => !cancelled && setComparison(c))
+      .catch((err) => !cancelled && setError(err.message))
+      .finally(() => !cancelled && setLoading((l) => ({ ...l, comparison: false })))
+    return () => {
+      cancelled = true
+    }
+  }, [selected?.id, reloadKey])
+
+  const runMatchingNow = async () => {
+    setError('')
+    setLoading((l) => ({ ...l, run: true }))
+    try {
+      const { candidates } = await runMatching(subject.id)
+      setListKey((k) => k + 1)
+      if (candidates[0]) onSelect(candidates[0].id)
+    } catch (err) {
+      setError(
+        err instanceof ApiError && err.status === 409
+          ? 'Subjek PM ini belum punya embedding — jalankan AI pada citranya terlebih dahulu.'
+          : err.message,
+      )
+    } finally {
+      setLoading((l) => ({ ...l, run: false }))
+    }
+  }
+
+  if (!subject) return null
+  const counterpart = (r) => (isPm ? r.am_subject : r.pm_subject)
+  const cov = comparison && [
+    ['PM', comparison.pm_coverage],
+    ['AM', comparison.am_coverage],
+  ]
+
+  return (
+    <section className="card p-6">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <GitCompareArrows className="h-4 w-4 text-teal-700" />
+            <h2 className="text-[17px] font-semibold text-ink">Perbandingan morfologi PM vs AM</h2>
+          </div>
+          <p className="mt-1 max-w-[80ch] text-[13px] text-slate-500">
+            {isPm
+              ? 'Hasil deteksi gigi subjek ini dibandingkan per FDI dengan kandidat ante-mortem hasil pencocokan.'
+              : 'Subjek ante-mortem ini dibandingkan dengan subjek post-mortem yang pernah dicocokkan dengannya.'}{' '}
+            Format fitur morfologi mengikuti kontrak AI sementara (belum final).
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {isPm && canRunMatching && (
+            <button onClick={runMatchingNow} disabled={loading.run} className="btn-ghost h-9 px-3.5 text-[12.5px]">
+              {loading.run ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitCompareArrows className="h-3.5 w-3.5" />}
+              {results.length ? 'Cari ulang kandidat AM' : 'Cari kandidat AM'}
+            </button>
+          )}
+          {selected?.status === 'confirmed' && (
+            <Link to={`/review/report/${selected.id}`} className="btn-primary h-9 px-3.5 text-[12.5px]">
+              <FileText className="h-3.5 w-3.5" />
+              Laporan INTERPOL
+            </Link>
+          )}
+        </div>
+      </header>
+
+      {error && (
+        <div className="mt-4 flex items-start gap-2 rounded-xl bg-rose-50 px-4 py-3">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />
+          <p className="text-[13px] text-rose-800">{error}</p>
+        </div>
+      )}
+
+      {loading.list ? (
+        <div className="flex justify-center py-8">
+          <Loader2 className="h-5 w-5 animate-spin text-teal-600" />
+        </div>
+      ) : results.length === 0 ? (
+        <p className="mt-4 text-[13px] text-slate-500">
+          {isPm
+            ? 'Belum ada hasil pencocokan untuk subjek ini.'
+            : 'Subjek ante-mortem ini belum pernah muncul sebagai kandidat pencocokan.'}
+        </p>
+      ) : (
+        <>
+          <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label="Pasangan pembanding">
+            {results.map((r) => {
+              const other = counterpart(r)
+              const active = r.id === selected?.id
+              const d = DECISION[r.status]
+              return (
+                <button
+                  key={r.id}
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => onSelect(r.id)}
+                  className={`rounded-xl border px-3.5 py-2 text-left transition-colors ${
+                    active ? 'border-teal-400 bg-teal-50/60' : 'border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[11px] text-slate-400">#{r.rank ?? '–'}</span>
+                    <span className="text-[13px] font-medium text-ink">{other?.full_name || 'Tanpa nama'}</span>
+                    <span className="font-mono text-[12px] text-teal-700">
+                      {r.confidence_score == null ? '–' : `${r.confidence_score.toFixed(1)}%`}
+                    </span>
+                  </div>
+                  <span className={`chip mt-1 ring-1 ${d.cls}`}>{d.label}</span>
+                </button>
+              )
+            })}
+          </div>
+
+          {loading.comparison || !comparison ? (
+            <div className="flex justify-center py-8">
+              <Loader2 className="h-5 w-5 animate-spin text-teal-600" />
+            </div>
+          ) : (
+            <div className="mt-5">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <p className="text-[12.5px] text-slate-500">
+                  Citra diproses AI —{' '}
+                  {cov.map(([label, c], i) => (
+                    <span
+                      key={label}
+                      className={c.images_with_results < c.images_total ? 'font-semibold text-amber-700' : ''}
+                    >
+                      {i > 0 && ' · '}
+                      {label}: {c.images_with_results}/{c.images_total}
+                    </span>
+                  ))}
+                  {cov.some(([, c]) => c.images_with_results < c.images_total) &&
+                    ' (perbandingan belum lengkap — jalankan AI pada citra yang belum diproses)'}
+                </p>
+                <label className="flex items-center gap-2 text-[12.5px] text-slate-600">
+                  <input type="checkbox" checked={onlyDiff} onChange={(e) => setOnlyDiff(e.target.checked)} />
+                  Hanya tampilkan perbedaan
+                </label>
+              </div>
+              <ToothComparisonTable comparison={comparison} onlyDifferences={onlyDiff} />
+              <Link
+                to={`/review?pm=${selected.pm_subject_id}`}
+                className="mt-4 inline-block text-[12.5px] font-semibold text-teal-700 hover:text-teal-800"
+              >
+                Tinjau pasangan ini di Forensic Review →
+              </Link>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
+
 const darkSelect =
   'h-8 rounded-lg border border-white/10 bg-white/[0.06] px-2.5 font-mono text-[11.5px] text-slate-200 ' +
   'focus:border-teal-400 focus:outline-none'
@@ -50,6 +269,7 @@ export default function Analysis() {
   const { user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const imageParam = searchParams.get('image')
+  const matchParam = searchParams.get('match')
 
   const [intensity, setIntensity] = useState(62)
   const [overlay, setOverlay] = useState(true)
@@ -62,10 +282,23 @@ export default function Analysis() {
   const [natural, setNatural] = useState(null) // { w, h } of the loaded image
   const [loading, setLoading] = useState({ subjects: true, images: false, teeth: false })
   const [error, setError] = useState('')
+  const [reloadKey, setReloadKey] = useState(0) // bumped after an AI run to refetch images + teeth
 
   const image = images.find((i) => i.id === imageParam) || null
 
-  // 1. PM + AM subjects; if ?image= is given, resolve its subject first.
+  // Update one query param while keeping the others (?image= & ?match= live together).
+  const setParam = (key, value) =>
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        if (value) next.set(key, value)
+        else next.delete(key)
+        return next
+      },
+      { replace: true },
+    )
+
+  // 1. PM + AM subjects; resolve the subject from ?image= or ?match= when given.
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -76,6 +309,9 @@ export default function Analysis() {
         if (imageParam) {
           const img = await getDentalImage(imageParam)
           if (!cancelled) setSubjectId(img.subject_id)
+        } else if (matchParam) {
+          const match = await getMatchingResult(matchParam)
+          if (!cancelled) setSubjectId(match.pm_subject_id)
         } else {
           const first = items.find((s) => s.subject_type === 'post_mortem') || items[0]
           if (first) setSubjectId(first.id)
@@ -105,21 +341,22 @@ export default function Analysis() {
         const sorted = [...items].sort((a, b) => order.indexOf(a.view_type) - order.indexOf(b.view_type))
         setImages(sorted)
         const current = new URLSearchParams(window.location.search).get('image')
-        if (!sorted.some((i) => i.id === current)) {
-          setSearchParams(sorted[0] ? { image: sorted[0].id } : {}, { replace: true })
-        }
+        if (!sorted.some((i) => i.id === current)) setParam('image', sorted[0]?.id)
       })
       .catch((err) => !cancelled && setError(err.message))
       .finally(() => !cancelled && setLoading((l) => ({ ...l, images: false })))
     return () => {
       cancelled = true
     }
-  }, [subjectId, setSearchParams])
+  }, [subjectId, reloadKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Image dimensions come from <img onLoad>; reset only when a different image is shown
+  // (a reload after an AI run keeps the same <img>, which does not fire onLoad again).
+  useEffect(() => setNatural(null), [image?.id])
 
   // 3. Tooth records of the selected image.
   useEffect(() => {
     setTeeth([])
-    setNatural(null)
     if (!image) return
     let cancelled = false
     setLoading((l) => ({ ...l, teeth: true }))
@@ -130,7 +367,7 @@ export default function Analysis() {
     return () => {
       cancelled = true
     }
-  }, [image?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [image?.id, reloadKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const stats = useMemo(() => {
     const confs = teeth.map(confValue).filter((c) => c != null)
@@ -155,6 +392,10 @@ export default function Analysis() {
 
   const subject = subjects.find((s) => s.id === subjectId)
   const hasResults = teeth.length > 0
+  // Same rule as the backend: AM data (incl. its inference) is admin-only, PM is admin + examiner.
+  const canRunAi =
+    !!subject && (user?.role === 'admin' || (user?.role === 'examiner' && subject.subject_type === 'post_mortem'))
+  const refreshAfterAi = () => setReloadKey((k) => k + 1)
   const band = intensity < 34 ? 0 : intensity < 67 ? 1 : 2
   const strokeW = natural ? Math.max(natural.w, natural.h) / 400 : 1
 
@@ -209,7 +450,7 @@ export default function Analysis() {
                     {images.map((img) => (
                       <button
                         key={img.id}
-                        onClick={() => setSearchParams({ image: img.id }, { replace: true })}
+                        onClick={() => setParam('image', img.id)}
                         className={`rounded-md px-2.5 py-1 font-mono text-[11px] tracking-wider transition-colors ${
                           img.id === image?.id ? 'bg-teal-500/20 text-teal-200' : 'text-slate-400 hover:text-slate-200'
                         }`}
@@ -412,7 +653,7 @@ export default function Analysis() {
             </div>
             <p className="mt-3 text-[12.5px] leading-snug text-slate-500">
               {hasResults
-                ? `Dihitung dari ${teeth.length} gigi yang dideteksi model AI. Skor kecocokan dengan data ante-mortem belum tersedia (endpoint matching menyusul).`
+                ? `Dihitung dari ${teeth.length} gigi yang dideteksi model AI. Perbandingan dengan kandidat ante-mortem ada di bagian "Perbandingan morfologi" di bawah.`
                 : 'Jalankan model AI pada citra ini untuk melihat skor.'}
             </p>
           </section>
@@ -427,18 +668,30 @@ export default function Analysis() {
                 <Loader2 className="h-5 w-5 animate-spin text-teal-600" />
               </div>
             ) : !hasResults ? (
-              <p className="mt-4 text-[12.5px] leading-snug text-slate-500">
-                {image ? (
-                  <>
-                    Belum ada hasil deteksi untuk citra ini — citra belum diproses AI atau inferensinya gagal.{' '}
-                    <Link to="/identify" className="font-semibold text-teal-700 hover:text-teal-800">
-                      Proses di Upload &amp; identify
-                    </Link>
-                  </>
-                ) : (
-                  'Pilih subjek dan citra terlebih dahulu.'
-                )}
-              </p>
+              image ? (
+                <div className="mt-4 space-y-3">
+                  <p className="text-[12.5px] leading-snug text-slate-500">
+                    Belum ada hasil deteksi untuk citra ini.{' '}
+                    <span className="font-medium text-slate-700">
+                      Status: {AI_STATUS_LABEL[image.ai_status] || AI_STATUS_LABEL.none}
+                    </span>
+                    {image.ai_status === 'completed' && ' — model tidak mendeteksi gigi pada citra ini.'}
+                  </p>
+                  {image.ai_status === 'failed' && image.ai_error_message && (
+                    <p className="rounded-lg bg-rose-50 px-3 py-2 text-[12px] text-rose-700">{image.ai_error_message}</p>
+                  )}
+                  <RunAiButton image={image} canRun={canRunAi} onDone={refreshAfterAi} />
+                  {!canRunAi && !isAiRunning(image.ai_status) && (
+                    <p className="text-[12px] text-slate-400">
+                      {user?.role === 'viewer'
+                        ? 'Akun viewer hanya dapat melihat hasil.'
+                        : 'Pemrosesan AI citra ante-mortem hanya dapat dijalankan admin.'}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="mt-4 text-[12.5px] leading-snug text-slate-500">Pilih subjek dan citra terlebih dahulu.</p>
+              )
             ) : (
               <dl className="mt-4 max-h-[420px] divide-y divide-slate-100 overflow-y-auto scroll-slim pr-1">
                 {teeth.map((t) => {
@@ -496,6 +749,14 @@ export default function Analysis() {
           </section>
         </aside>
       </div>
+
+      <MorphologyComparison
+        subject={subject}
+        selectedId={matchParam}
+        onSelect={(id) => setParam('match', id)}
+        reloadKey={reloadKey}
+        canRunMatching={['admin', 'examiner'].includes(user?.role)}
+      />
 
       {/* Activity log — mock; real source would be GET /audit (admin/examiner only) */}
       {LOG_ROLES.includes(user?.role) && (

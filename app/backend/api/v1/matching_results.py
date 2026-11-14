@@ -18,6 +18,7 @@ Role akses:
 """
 
 import uuid
+from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
@@ -28,10 +29,30 @@ from sqlalchemy.orm import aliased, selectinload
 
 from core.database import get_db
 from dependencies.auth import get_current_user, require_role
+from models.audit_log import AuditLog
+from models.dental_image import DentalImage
 from models.embedding import Embedding
 from models.matching_result import MatchingResult
 from models.subject import Subject
+from models.tooth_record import ToothRecord
 from models.user import User
+from schemas.dental_comparison import (
+    DentalComparisonResponse,
+    IdentificationReportResponse,
+    ImageCoverage,
+    ReportDecision,
+    ReportImage,
+    ReportPerson,
+    ReportSubject,
+    SubjectCoverage,
+)
+from services.dental_comparison import (
+    ToothObservation,
+    compare_dentition,
+    normalize_confidence,
+    normalize_morphology,
+)
+from services.rag_service_client import rag_service_client
 from schemas.matching_result import (
     MatchingConfirmRequest,
     MatchingResultListResponse,
@@ -275,6 +296,252 @@ async def get_matching_result(
 
     request.state.resource_id = result.id
     return MatchingResultResponse.model_validate(result)
+
+
+# ── Perbandingan gigi PM vs AM & laporan identifikasi ───────────────
+
+async def _get_active_result(db: AsyncSession, id: UUID) -> MatchingResult:
+    result = (await db.execute(_select_results().where(MatchingResult.id == id))).scalar_one_or_none()
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Hasil pencocokan tidak ditemukan",
+        )
+    return result
+
+
+async def _build_comparison(
+    db: AsyncSession, result: MatchingResult
+) -> tuple[DentalComparisonResponse, list[DentalImage], dict[UUID, int]]:
+    """Kumpulkan tooth_records citra aktif kedua subjek lalu bandingkan per FDI."""
+    subject_ids = [result.pm_subject_id, result.am_subject_id]
+    images = list(
+        (
+            await db.execute(
+                select(DentalImage)
+                .where(DentalImage.subject_id.in_(subject_ids), DentalImage.is_deleted == False)
+                .order_by(DentalImage.uploaded_at)
+            )
+        ).scalars().all()
+    )
+    image_by_id = {img.id: img for img in images}
+
+    records = (
+        await db.execute(
+            select(
+                ToothRecord.dental_image_id,
+                ToothRecord.fdi_number,
+                ToothRecord.confidence_score,
+                ToothRecord.morphology_features,
+            ).where(ToothRecord.dental_image_id.in_(image_by_id.keys()))
+        )
+    ).all() if image_by_id else []
+
+    teeth_per_image: dict[UUID, int] = {img.id: 0 for img in images}
+    observations: dict[UUID, list[ToothObservation]] = {sid: [] for sid in subject_ids}
+    for rec in records:
+        img = image_by_id[rec.dental_image_id]
+        teeth_per_image[img.id] += 1
+        observations[img.subject_id].append(
+            ToothObservation(
+                fdi_number=rec.fdi_number,
+                view_type=img.view_type,
+                confidence=normalize_confidence(rec.confidence_score),
+                morphology=normalize_morphology(rec.morphology_features),
+            )
+        )
+
+    def coverage(subject_id: UUID) -> SubjectCoverage:
+        own = [img for img in images if img.subject_id == subject_id]
+        return SubjectCoverage(
+            subject_id=subject_id,
+            images=[
+                ImageCoverage(dental_image_id=img.id, view_type=img.view_type, teeth_detected=teeth_per_image[img.id])
+                for img in own
+            ],
+            images_total=len(own),
+            images_with_results=sum(1 for img in own if teeth_per_image[img.id] > 0),
+        )
+
+    teeth, summary = compare_dentition(observations[result.pm_subject_id], observations[result.am_subject_id])
+    comparison = DentalComparisonResponse(
+        matching_result=MatchingResultResponse.model_validate(result),
+        pm_coverage=coverage(result.pm_subject_id),
+        am_coverage=coverage(result.am_subject_id),
+        summary=summary,
+        teeth=teeth,
+    )
+    return comparison, images, teeth_per_image
+
+
+@router.get(
+    "/{id}/comparison",
+    response_model=DentalComparisonResponse,
+    summary="Compare PM vs AM Teeth",
+    description=(
+        "Perbandingan hasil deteksi AI per gigi (FDI) antara subjek PM dan kandidat AM: "
+        "keberadaan gigi, confidence, dan delta tiap fitur morfologi. Hasil 3 sudut citra "
+        "digabung (confidence tertinggi). Tersedia untuk semua status review dan semua role."
+    ),
+)
+async def compare_matching_result(
+    id: UUID,
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> DentalComparisonResponse:
+    result = await _get_active_result(db, id)
+    comparison, _, _ = await _build_comparison(db, result)
+    request.state.resource_id = result.id
+    return comparison
+
+
+def _person(user: User | None) -> ReportPerson | None:
+    if user is None:
+        return None
+    return ReportPerson(id=user.id, username=user.username, full_name=user.full_name)
+
+
+@router.get(
+    "/{id}/report",
+    response_model=IdentificationReportResponse,
+    summary="Generate INTERPOL DVI Identification Report",
+    description=(
+        "Laporan identifikasi format INTERPOL DVI untuk pasangan PM–AM yang sudah "
+        "DIKONFIRMASI odontolog (status lain → 409): identitas subjek, skor pencocokan, "
+        "keputusan reviewer, perbandingan gigi, chain-of-custody citra (SHA-256), dan "
+        "narasi Agentic RAG (status 'not_available' selama layanan RAG belum terhubung). "
+        "Dibuat ulang setiap diminta (belum disimpan). Dapat diakses semua role."
+    ),
+)
+async def get_identification_report(
+    id: UUID,
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> IdentificationReportResponse:
+    result = await _get_active_result(db, id)
+    if result.status != "confirmed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Laporan identifikasi hanya tersedia untuk pasangan yang sudah dikonfirmasi "
+                f"odontolog (status saat ini: {result.status})"
+            ),
+        )
+
+    comparison, images, teeth_per_image = await _build_comparison(db, result)
+    pm, am = result.pm_subject, result.am_subject
+
+    # Keputusan reviewer & pengunggah citra hanya tercatat di audit log
+    decision_log = (
+        await db.execute(
+            select(AuditLog)
+            .where(
+                AuditLog.action == "CONFIRM_MATCH",
+                AuditLog.resource_id == result.id,
+                AuditLog.status_code < 400,
+            )
+            .order_by(AuditLog.timestamp.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    upload_logs = (
+        await db.execute(
+            select(AuditLog.resource_id, AuditLog.user_id)
+            .where(
+                AuditLog.action == "UPLOAD_DENTAL_IMAGE",
+                AuditLog.resource_id.in_([img.id for img in images]),
+                AuditLog.status_code < 400,
+            )
+        )
+    ).all() if images else []
+    uploader_by_image = {row.resource_id: row.user_id for row in upload_logs}
+
+    user_ids = {
+        uid
+        for uid in [
+            pm.created_by,
+            am.created_by,
+            result.matched_by,
+            decision_log.user_id if decision_log else None,
+            *uploader_by_image.values(),
+        ]
+        if uid
+    }
+    users = {
+        u.id: u for u in (await db.execute(select(User).where(User.id.in_(user_ids)))).scalars().all()
+    } if user_ids else {}
+
+    def subject_section(s: Subject) -> ReportSubject:
+        return ReportSubject(
+            id=s.id,
+            subject_type=s.subject_type,
+            full_name=s.full_name,
+            case_reference=s.case_reference,
+            notes=s.notes,
+            created_at=s.created_at,
+            created_by=_person(users.get(s.created_by)),
+        )
+
+    scores = {
+        "cosine_similarity": result.cosine_similarity,
+        "confidence_score": comparison.matching_result.confidence_score,
+        "rank": result.rank,
+        "superimposition_score": result.superimposition_score,
+        "morphology_diff_score": result.morphology_diff_score,
+    }
+
+    narrative = await rag_service_client.generate_narrative(
+        {
+            "matching_result_id": str(result.id),
+            "pm_subject": subject_section(pm).model_dump(mode="json"),
+            "am_subject": subject_section(am).model_dump(mode="json"),
+            "scores": scores,
+            "comparison": {
+                "summary": comparison.summary.model_dump(mode="json"),
+                "teeth": [t.model_dump(mode="json") for t in comparison.teeth],
+            },
+        }
+    )
+
+    request.state.audit_action = "GENERATE_REPORT"
+    request.state.resource_type = "matching_results"
+    request.state.resource_id = result.id
+    request.state.audit_details = {"narrative": narrative.status}
+
+    return IdentificationReportResponse(
+        generated_at=datetime.now(timezone.utc),
+        generated_by=_person(current_user),
+        matching_result_id=result.id,
+        case_reference=pm.case_reference,
+        pm_subject=subject_section(pm),
+        am_subject=subject_section(am),
+        scores=scores,
+        decision=ReportDecision(
+            status=result.status,
+            decided_by=_person(users.get(decision_log.user_id)) if decision_log else None,
+            decided_at=decision_log.timestamp if decision_log else None,
+            matched_by=_person(users.get(result.matched_by)),
+            matched_at=result.created_at,
+        ),
+        comparison=comparison,
+        images=[
+            ReportImage(
+                dental_image_id=img.id,
+                subject_id=img.subject_id,
+                view_type=img.view_type,
+                file_hash=img.file_hash,
+                device_id=img.device_id,
+                captured_at=img.captured_at,
+                uploaded_at=img.uploaded_at,
+                uploaded_by=_person(users.get(uploader_by_image.get(img.id))),
+                teeth_detected=teeth_per_image[img.id],
+            )
+            for img in images
+        ],
+        narrative=narrative,
+    )
 
 
 @router.post(

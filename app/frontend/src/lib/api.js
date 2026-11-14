@@ -17,6 +17,10 @@
  *
  * AM candidate matching (Pekan 10):
  *   5. POST /api/v1/matching-results/run   JSON { pm_subject_id, top_k? }  → top 3 AM candidates
+ *
+ * Pekan 12: AI status per image + batch reprocessing (GET /dental-images/unprocessed,
+ * POST /inference/batch), PM vs AM tooth comparison & INTERPOL report
+ * (GET /matching-results/{id}/comparison | /report).
  */
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
@@ -382,4 +386,74 @@ export function toCandidate(r) {
  */
 export function getStatsSummary() {
   return apiFetch('/api/v1/stats/summary')
+}
+
+// ── AI status per citra & pemrosesan ulang (Pekan 12) ────────────────────
+// Setiap citra dari GET /subjects/{id}/images dan /dental-images/{id} membawa
+// `ai_status` (none|pending|processing|completed|failed — job TERAKHIR),
+// `ai_processed` (pernah completed), `latest_job_id`, `ai_error_message`.
+
+export const AI_STATUS_LABEL = {
+  none: 'Belum diproses AI',
+  pending: 'Menunggu antrean AI',
+  processing: 'Sedang diproses AI',
+  completed: 'Sudah diproses AI',
+  failed: 'Proses AI gagal',
+}
+
+export const isAiRunning = (status) => status === 'pending' || status === 'processing'
+
+/** Trigger one image and poll the job to the end. Resolves with the final job. */
+export async function runImageInference(imageId, { signal, onUpdate } = {}) {
+  const job = await triggerInference(imageId, { signal })
+  onUpdate?.(job)
+  return pollInferenceJob(job.id, { signal, onUpdate })
+}
+
+/**
+ * Active images that never completed AI processing (none / running / failed).
+ * @returns {Promise<{ items: object[], total: number, counts: { ante_mortem: number, post_mortem: number },
+ *   limit: number, offset: number }>}
+ */
+export function listUnprocessedImages({ subjectType, limit = 200, offset = 0 } = {}) {
+  const q = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  if (subjectType) q.set('subject_type', subjectType)
+  return apiFetch(`/api/v1/dental-images/unprocessed?${q}`)
+}
+
+export const INFERENCE_BATCH_MAX = 50
+
+/**
+ * Queue AI processing for many images (backend runs them a few at a time).
+ * @returns {Promise<{ jobs: object[], skipped: { dental_image_id: string, reason: string, detail: string }[],
+ *   max_concurrent: number }>}
+ */
+export function triggerInferenceBatch(dentalImageIds, { force = false } = {}) {
+  return apiFetch('/api/v1/inference/batch', {
+    method: 'POST',
+    json: { dental_image_ids: dentalImageIds, force },
+  })
+}
+
+// ── Perbandingan gigi PM vs AM & laporan INTERPOL (Pekan 12) ─────────────
+
+/**
+ * Per-tooth (FDI) comparison of a PM subject and one AM candidate.
+ * teeth[].status: consistent | discrepant | pm_only | am_only;
+ * teeth[].features[]: { feature, pm, am, delta, status: same|different|pm_only|am_only }.
+ */
+export function getMatchingComparison(matchingResultId) {
+  return apiFetch(`/api/v1/matching-results/${matchingResultId}/comparison`)
+}
+
+/** INTERPOL DVI identification report — confirmed matches only (409 otherwise). */
+export function getIdentificationReport(matchingResultId) {
+  return apiFetch(`/api/v1/matching-results/${matchingResultId}/report`)
+}
+
+export const TOOTH_STATUS = {
+  consistent: { label: 'Konsisten', cls: 'bg-teal-50 text-teal-700 ring-teal-200' },
+  discrepant: { label: 'Berbeda', cls: 'bg-amber-50 text-amber-700 ring-amber-200' },
+  pm_only: { label: 'Hanya di PM', cls: 'bg-sky-50 text-sky-700 ring-sky-200' },
+  am_only: { label: 'Hanya di AM', cls: 'bg-slate-100 text-slate-600 ring-slate-200' },
 }

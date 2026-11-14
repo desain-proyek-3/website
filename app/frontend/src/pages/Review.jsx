@@ -9,6 +9,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Cpu,
+  FileText,
+  GitCompareArrows,
   ImageOff,
   Loader2,
   Lock,
@@ -465,6 +467,13 @@ export default function Review() {
                   <p className="mt-1.5 text-[13.5px] leading-relaxed text-slate-700">
                     {MATCH_TIER_NOTE[matchTier(confidence)]}
                   </p>
+                  <Link
+                    to={`/analysis?match=${active.id}`}
+                    className="mt-2 inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-teal-700 hover:text-teal-800"
+                  >
+                    <GitCompareArrows className="h-3.5 w-3.5" />
+                    Bandingkan gigi PM vs AM di Feature analysis
+                  </Link>
                 </div>
 
                 {/* Decision Section */}
@@ -496,12 +505,20 @@ export default function Review() {
                         </p>
                       </div>
                     </div>
-                    {queue[activeIdx + 1] && (
-                      <button onClick={() => goTo(1)} className="btn-ghost h-9 px-3.5 text-[12.5px] text-teal-700">
-                        Berikutnya
-                        <ArrowRight className="h-3.5 w-3.5" />
-                      </button>
-                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {active.status === 'confirmed' && (
+                        <Link to={`/review/report/${active.id}`} className="btn-primary h-9 px-3.5 text-[12.5px]">
+                          <FileText className="h-3.5 w-3.5" />
+                          Laporan INTERPOL
+                        </Link>
+                      )}
+                      {queue[activeIdx + 1] && (
+                        <button onClick={() => goTo(1)} className="btn-ghost h-9 px-3.5 text-[12.5px] text-teal-700">
+                          Berikutnya
+                          <ArrowRight className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ) : !canDecide ? (
                   <div className="mt-5 flex items-start gap-3 rounded-xl bg-slate-50 p-4">

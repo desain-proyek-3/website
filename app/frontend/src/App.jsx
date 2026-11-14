@@ -4,6 +4,7 @@ import ProtectedRoute from './components/ProtectedRoute.jsx'
 import Login from './pages/Login.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Review from './pages/Review.jsx'
+import Report from './pages/Report.jsx'
 import Analysis from './pages/Analysis.jsx'
 import Identify from './pages/Identify.jsx'
 import Users from './pages/Users.jsx'
@@ -28,6 +29,7 @@ export default function App() {
         <Route path="/identify" element={<Identify />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/review" element={<Review />} />
+        <Route path="/review/report/:id" element={<Report />} />
         <Route path="/analysis" element={<Analysis />} />
         <Route
           path="/am-records"
