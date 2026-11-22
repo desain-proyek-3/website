@@ -1,0 +1,38 @@
+# Compose PRODUKSI backend Dentify — LXC webapp (100.64.106.122).
+# Terpisah dari docker-compose.yml di root repo (itu khusus dev lokal: PG/MinIO/Chroma).
+#
+# Di server file ini diletakkan di /opt/dentify-deploy/. PostgreSQL, MinIO, ChromaDB & nginx
+# tetap native; hanya backend yang berjalan di container.
+#
+# Deploy / redeploy (pastikan TIDAK ada job AI pending/processing):
+#   sudo docker load -i /tmp/dentify-backend-<TAG>.tar
+#   sudo docker tag dentify-backend:<TAG> dentify-backend:current
+#   cd /opt/dentify-deploy && sudo docker compose -f docker-compose.prod.yml up -d
+# Rollback image : tag ulang <TAG lama> sebagai :current, lalu `up -d` lagi.
+# Rollback total : `docker compose ... down` lalu `systemctl enable --now dentify-backend`.
+
+services:
+  backend:
+    image: dentify-backend:current
+    container_name: dentify-backend
+    # host network: .env (127.0.0.1 untuk PG/MinIO, IP Tailscale untuk AI) & proxy nginx
+    # ke 127.0.0.1:8000 dipakai apa adanya; tidak ada port publish → aturan ufw tidak disentuh.
+    network_mode: host
+    # .env yang sudah ada di server (600, milik dentify); dibaca oleh docker compose (root).
+    env_file: /opt/dentify/app/backend/.env
+    restart: unless-stopped
+    # Setara ProtectSystem di unit systemd lama: backend tidak menulis ke disk (citra → MinIO).
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    # Beri waktu uvicorn menutup koneksi sebelum SIGKILL
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

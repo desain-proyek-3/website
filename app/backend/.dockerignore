@@ -1,0 +1,25 @@
+# Hanya kode yang dibutuhkan saat runtime yang masuk image
+
+# Lingkungan & cache lokal
+venv/
+.venv/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+
+# Kredensial — .env server dipasang lewat env_file, tidak pernah masuk image
+.env
+.env.*
+
+# Khusus dev / test — jangan di-deploy
+tests/
+scripts/mock_ai_service.py
+scripts/device_receiver.py
+scripts/_device_inbox/
+
+# Artefak lain
+*.tgz
+*.tar
+*.log
+Dockerfile
+.dockerignore
