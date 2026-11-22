@@ -1,34 +1,30 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  Activity,
   AlertTriangle,
   ArrowUpRight,
-  BrainCircuit,
   CheckCircle2,
   CircleDot,
   Cpu,
   Database,
-  FileText,
   Filter,
   Layers,
   RefreshCw,
   Users,
-  Zap,
 } from 'lucide-react'
 import RadialGauge from '../components/RadialGauge.jsx'
 import MeterBar from '../components/MeterBar.jsx'
-import SimBadge from '../components/SimBadge.jsx'
 import UnprocessedImagesCard from '../components/UnprocessedImagesCard.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 import {
   MATCH_THRESHOLDS,
   MATCH_TIER_NOTE,
+  getMatchingComparison,
   getStatsSummary,
   listMatchingResults,
+  matchTier,
   toCandidate,
 } from '../lib/api.js'
-import { AI_INSIGHTS, ACTIVITY_LOG, COMPARISON } from '../lib/data.js'
 
 // Pending candidates fetched for the triage matrix (newest first).
 const TRIAGE_FETCH_LIMIT = 100
@@ -38,13 +34,6 @@ const STATE_STYLES = {
   match: { chip: 'bg-teal-50 text-teal-700 ring-teal-200', Icon: CheckCircle2, word: 'MATCH' },
   review: { chip: 'bg-amber-50 text-amber-700 ring-amber-200', Icon: CircleDot, word: 'REVIEW' },
   conflict: { chip: 'bg-rose-50 text-rose-700 ring-rose-200', Icon: AlertTriangle, word: 'CONFLICT' },
-}
-
-const LOG_STATUS = {
-  complete: { dot: 'bg-teal-500', text: 'text-teal-700', label: 'Done' },
-  flagged: { dot: 'bg-signal-amber', text: 'text-amber-600', label: 'Flagged' },
-  running: { dot: 'bg-signal-cyan animate-pulseDot', text: 'text-cyan-600', label: 'Running' },
-  attention: { dot: 'bg-signal-rose', text: 'text-rose-600', label: 'Attention' },
 }
 
 // Keyed by matchTier() — same thresholds as Identify & Review.
@@ -75,6 +64,60 @@ const TIER_FILTERS = [
     on: 'bg-rose-600 text-white shadow-sm', off: 'border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100' },
 ]
 
+// ── Ante-mortem vs post-mortem (data dari GET /matching-results/{id}/comparison) ──
+const THIRD_MOLARS = [18, 28, 38, 48]
+const VIEW_ORDER = ['depan', 'kiri', 'kanan']
+const MAX_AGREEMENT_CHIPS = 8
+const FEATURE_LABELS = {
+  restoration: 'restorasi',
+  caries: 'karies',
+  rotation: 'rotasi',
+  diastema: 'diastema',
+  crowding: 'crowding',
+  missing: 'missing',
+  anomaly: 'anomali',
+}
+const DECISION_STYLES = {
+  pending_review: { chip: 'bg-amber-50 text-amber-700 ring-amber-200', label: 'MENUNGGU REVIEW' },
+  confirmed: { chip: 'bg-teal-50 text-teal-700 ring-teal-200', label: 'DIKONFIRMASI' },
+  rejected: { chip: 'bg-rose-50 text-rose-700 ring-rose-200', label: 'DITOLAK' },
+}
+// Flag morfologi dari AI berupa 0/1 (kadang boolean)
+const isFlagged = (v) => v === true || (typeof v === 'number' && v > 0)
+
+/** Ringkasan satu sisi (pm/am) dari hasil perbandingan per gigi. */
+function summarizeSide(teeth, side, coverage) {
+  const present = teeth.filter((t) => t[side])
+  return {
+    teeth: present.length,
+    restorations: present.filter((t) => isFlagged(t[side].morphology?.restoration)).length,
+    thirdMolars: present.filter((t) => THIRD_MOLARS.includes(t.fdi_number)).length,
+    processed: coverage?.images_with_results ?? 0,
+    total: coverage?.images_total ?? 0,
+    views: VIEW_ORDER.filter((v) => coverage?.images?.some((img) => img.view_type === v)),
+  }
+}
+
+/** Chip kesesuaian: konsisten (ringkas) → berbeda → hanya di satu sisi. */
+function buildAgreements({ summary, teeth }) {
+  const conflicts = []
+  const reviews = []
+  for (const t of teeth) {
+    if (t.status === 'discrepant') {
+      const diffs = t.features
+        .filter((f) => f.status === 'different')
+        .map((f) => FEATURE_LABELS[f.feature] ?? f.feature)
+      conflicts.push({ label: `#${t.fdi_number} berbeda${diffs.length ? `: ${diffs.join(', ')}` : ''}`, status: 'conflict' })
+    } else if (t.status === 'pm_only') {
+      reviews.push({ label: `#${t.fdi_number} hanya di PM`, status: 'review' })
+    } else if (t.status === 'am_only') {
+      reviews.push({ label: `#${t.fdi_number} hanya di AM`, status: 'review' })
+    }
+  }
+  const consistent = summary.consistent ? [{ label: `${summary.consistent} gigi konsisten`, status: 'match' }] : []
+  return [...consistent, ...conflicts, ...reviews]
+}
+
 const ratio = (part, whole) => (whole ? Math.round((part / whole) * 100) : 0)
 const num = (v) => (v == null ? '–' : v)
 
@@ -94,75 +137,47 @@ function Stat({ icon: Icon, label, value, sub }) {
   )
 }
 
-/* ─── AM / PM Scan Panel ──────────────────────────────────────── */
-function ScanPanel({ data, tone }) {
-  const isAM = data.tag === 'AM'
+/* ─── AM / PM Subject Panel ───────────────────────────────────── */
+function SubjectPanel({ tag, subject, side, tone, dot }) {
+  const facts = [
+    ['Gigi terdeteksi', side.teeth],
+    ['Restorasi', side.restorations],
+    ['Molar ketiga', `${side.thirdMolars}/4`],
+  ]
   return (
     <div className="card-dark overflow-hidden">
       <div className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
-        <div className="flex items-center gap-3">
-          <span className={`chip font-bold tracking-widest ${tone}`}>{data.tag}</span>
-          <div>
-            <h4 className="text-[15px] font-semibold text-white">{data.title}</h4>
-            <p className="mt-0.5 text-[12px] text-slate-400">{data.source}</p>
+        <div className="flex min-w-0 items-center gap-3">
+          <span className={`chip font-bold tracking-widest ${tone}`}>{tag}</span>
+          <div className="min-w-0">
+            <h4 className="truncate text-[15px] font-semibold text-white">{subject.full_name || 'Tanpa nama'}</h4>
+            <p className="mt-0.5 truncate font-mono text-[12px] text-slate-400">
+              {subject.case_reference || subject.id.slice(0, 8)}
+            </p>
           </div>
         </div>
-        <div className="text-right">
-          <div className="font-mono text-[10.5px] tracking-[.12em] text-slate-500">CAPTURED</div>
-          <div className="mt-1 font-mono text-[13px] text-slate-300">{data.captured}</div>
+        <div className="shrink-0 text-right">
+          <div className="font-mono text-[10.5px] tracking-[.12em] text-slate-500">CITRA DIPROSES</div>
+          <div className="mt-1 font-mono text-[13px] text-slate-300">
+            {side.processed}/{side.total}
+          </div>
         </div>
       </div>
 
       <dl className="grid grid-cols-3 divide-x divide-white/10">
-        {data.facts.map(([k, v]) => (
+        {facts.map(([k, v]) => (
           <div key={k} className="px-4 py-3.5">
             <dt className="font-mono text-[10px] tracking-[.12em] text-slate-500">{k.toUpperCase()}</dt>
-            <dd className="mt-1 text-[13px] font-semibold text-slate-200">{v}</dd>
+            <dd className="mt-1 font-mono text-[13px] font-semibold text-slate-200">{v}</dd>
           </div>
         ))}
       </dl>
 
       <div className="flex items-center justify-between border-t border-white/10 px-4 py-3">
         <span className="text-[12px] text-slate-400">
-          Kualitas citra: <span className="text-slate-200">{data.quality}</span>
+          Sudut: <span className="text-slate-200">{side.views.length ? side.views.join(' · ') : 'belum ada citra'}</span>
         </span>
-        <span
-          className={`h-2 w-2 rounded-full ${
-            isAM ? 'bg-teal-400' : 'bg-signal-amber'
-          } animate-pulseDot`}
-        />
-      </div>
-    </div>
-  )
-}
-
-/* ─── Activity Log Row ────────────────────────────────────────── */
-function LogRow({ entry, isLast }) {
-  const s = LOG_STATUS[entry.status] ?? LOG_STATUS.complete
-  return (
-    <div className="flex gap-4">
-      <div className="flex flex-col items-center">
-        <span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${s.dot}`} />
-        {!isLast && <span className="mt-1 w-px flex-1 bg-slate-100" />}
-      </div>
-
-      <div className={`min-w-0 flex-1 ${isLast ? '' : 'pb-4'}`}>
-        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-          <span className="text-[13.5px] font-medium text-ink">{entry.action}</span>
-          <span className="font-mono text-[11px] text-slate-400">{entry.time}</span>
-        </div>
-        <div className="mt-0.5 text-[12px] text-slate-500">
-          <span className="font-mono text-teal-700">{entry.record}</span>
-          {' · '}
-          {entry.detail}
-        </div>
-        <div className="mt-0.5 flex items-center gap-1.5 text-[11.5px] text-slate-400">
-          <Zap className="h-3 w-3" />
-          {entry.operator}
-          <span className={`ml-1 font-mono text-[10px] font-semibold tracking-widest ${s.text}`}>
-            {s.label.toUpperCase()}
-          </span>
-        </div>
+        <span className={`h-2 w-2 rounded-full ${dot}`} />
       </div>
     </div>
   )
@@ -176,6 +191,34 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [filterTier, setFilterTier] = useState('all')
+  // Pasangan panel AM vs PM: { status: 'loading'|'empty'|'error'|'ready', comparison?, message? }
+  const [featured, setFeatured] = useState({ status: 'loading' })
+  const featuredSeq = useRef(0)
+
+  // Kandidat pending dengan confidence tertinggi (= kartu #1 Matriks Triase);
+  // bila tidak ada → pasangan terakhir yang dikonfirmasi.
+  const loadFeatured = useCallback(async (pendingItems) => {
+    const seq = ++featuredSeq.current
+    setFeatured({ status: 'loading' })
+    try {
+      let pick = [...pendingItems].sort((a, b) => toCandidate(b).confidence - toCandidate(a).confidence)[0]
+      if (!pick) {
+        const confirmed = await listMatchingResults({ status: 'confirmed', limit: 1 })
+        pick = confirmed.items[0]
+      }
+      if (seq !== featuredSeq.current) return
+      if (!pick) {
+        setFeatured({ status: 'empty' })
+        return
+      }
+      const comparison = await getMatchingComparison(pick.id)
+      if (seq === featuredSeq.current) setFeatured({ status: 'ready', comparison })
+    } catch (e) {
+      if (seq === featuredSeq.current) {
+        setFeatured({ status: 'error', message: e?.message || 'Gagal memuat perbandingan.' })
+      }
+    }
+  }, [])
 
   // Each source fails independently, so one broken request doesn't blank the page.
   const load = useCallback(async () => {
@@ -186,11 +229,17 @@ export default function Dashboard() {
       listMatchingResults({ status: 'pending_review', limit: TRIAGE_FETCH_LIMIT }),
     ])
     if (statsRes.status === 'fulfilled') setStats(statsRes.value)
-    if (pendingRes.status === 'fulfilled') setPendingResults(pendingRes.value)
+    if (pendingRes.status === 'fulfilled') {
+      setPendingResults(pendingRes.value)
+      loadFeatured(pendingRes.value.items ?? [])
+    } else {
+      featuredSeq.current += 1
+      setFeatured({ status: 'error', message: 'Daftar kandidat gagal dimuat.' })
+    }
     const failed = [statsRes, pendingRes].find((r) => r.status === 'rejected')
     if (failed) setError(failed.reason?.message || 'Gagal memuat data dashboard.')
     setLoading(false)
-  }, [])
+  }, [loadFeatured])
 
   useEffect(() => {
     load()
@@ -227,6 +276,16 @@ export default function Dashboard() {
         },
       ]
     : []
+
+  const cmp = featured.status === 'ready' ? featured.comparison : null
+  const featuredResult = cmp?.matching_result
+  const featuredConf = featuredResult?.confidence_score ?? 0
+  const featuredDecision = featuredResult
+    ? DECISION_STYLES[featuredResult.status] ?? DECISION_STYLES.pending_review
+    : null
+  const pmSide = cmp ? summarizeSide(cmp.teeth, 'pm', cmp.pm_coverage) : null
+  const amSide = cmp ? summarizeSide(cmp.teeth, 'am', cmp.am_coverage) : null
+  const agreements = cmp ? buildAgreements(cmp) : []
 
   const candidates = (pendingResults?.items ?? [])
     .map((r) => ({ ...toCandidate(r), pmSubjectId: r.pm_subject_id, pm: r.pm_subject, cosine: r.cosine_similarity }))
@@ -282,7 +341,7 @@ export default function Dashboard() {
       {/* ── Images still waiting for AI (Pekan 12) ──────────────── */}
       <UnprocessedImagesCard role={user?.role} onQueued={load} />
 
-      {/* ── Middle row: Matching progress + AI insights ─────────── */}
+      {/* ── Middle row: Matching progress + AM vs PM ────────────── */}
       <div className="grid gap-6 xl:grid-cols-12">
         {/* Matching progress */}
         <section className="card p-6 xl:col-span-7">
@@ -341,71 +400,113 @@ export default function Dashboard() {
           </div>
         </section>
 
-        {/* AI insights — waits for the Agentic RAG service */}
+        {/* AM vs PM — kandidat pending teratas / identifikasi terakhir dikonfirmasi */}
         <section className="card flex flex-col p-6 xl:col-span-5">
-          <header className="flex items-start justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <span className="grid h-10 w-10 place-items-center rounded-xl bg-viewer-800 text-teal-300">
-                <BrainCircuit className="h-5 w-5" />
-              </span>
-              <div>
-                <h2 className="text-[17px] font-semibold text-ink">AI Ensemble Insights</h2>
-                <p className="mt-0.5 font-mono text-[11px] tracking-[.1em] text-slate-400">
-                  AGENTIC RAG · {AI_INSIGHTS.retrieved} SOURCES RETRIEVED
-                </p>
+          <header className="flex flex-wrap items-end justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-[17px] font-semibold text-ink">Ante-mortem vs post-mortem</h2>
+                {featuredDecision && (
+                  <span className={`chip ring-1 ${featuredDecision.chip}`}>{featuredDecision.label}</span>
+                )}
               </div>
+              <p className="mt-1 text-[13px] text-slate-500">
+                {featuredResult ? (
+                  <>
+                    {featuredResult.status === 'pending_review'
+                      ? 'Kandidat teratas yang menunggu review'
+                      : 'Identifikasi terakhir yang dikonfirmasi'}
+                    {' · '}skor{' '}
+                    <span className={`font-mono font-semibold ${TIER_STYLES[matchTier(featuredConf)].text}`}>
+                      {featuredConf.toFixed(1)}%
+                    </span>
+                  </>
+                ) : (
+                  'Pasangan PM ↔ AM dari hasil pencocokan'
+                )}
+              </p>
             </div>
-            <div className="flex flex-col items-end gap-1.5">
-              <SimBadge />
-              <div className="font-mono text-[26px] font-semibold leading-none text-teal-700">
-                {AI_INSIGHTS.confidence}%
-              </div>
-              <div className="text-[11.5px] text-slate-400">confidence</div>
-            </div>
+            {featuredResult && (
+              <Link
+                to={
+                  featuredResult.status === 'confirmed'
+                    ? `/review/report/${featuredResult.id}`
+                    : `/review?pm=${featuredResult.pm_subject_id}`
+                }
+                className="btn-ghost h-9 px-3.5 text-[12.5px]"
+              >
+                {featuredResult.status === 'confirmed' ? 'Buka laporan' : 'Buka perbandingan'}
+                <ArrowUpRight className="h-3.5 w-3.5" />
+              </Link>
+            )}
           </header>
 
-          <ul className="mt-5 flex-1 divide-y divide-slate-100">
-            {AI_INSIGHTS.findings.map((f) => {
-              const s = STATE_STYLES[f.state]
-              return (
-                <li key={f.key} className="py-3.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-[14px] font-medium text-ink">{f.key}</span>
-                    <span className="flex items-center gap-2">
-                      <span className="font-mono text-[13px] text-slate-700">{f.value}</span>
-                      <span className={`chip ring-1 ${s.chip}`}>
-                        <s.Icon className="h-3 w-3" />
-                        {s.word}
-                      </span>
-                    </span>
-                  </div>
-                  <p className="mt-1 max-w-[52ch] text-[12.5px] leading-snug text-slate-500">{f.note}</p>
-                </li>
-              )
-            })}
-          </ul>
+          {featured.status === 'loading' && (
+            <p className="mt-5 text-[13px] text-slate-400">Memuat perbandingan…</p>
+          )}
 
-          <div className="mt-4 rounded-xl bg-slate-50 p-4">
-            <div className="flex items-center gap-2 text-slate-500">
-              <FileText className="h-3.5 w-3.5" />
-              <span className="font-mono text-[10.5px] tracking-[.12em]">EVIDENCE DARI ARSIP KLINIK</span>
+          {featured.status === 'empty' && (
+            <p className="mt-5 rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-[13px] text-slate-400">
+              Belum ada pasangan PM ↔ AM. Jalankan pencarian kandidat AM di halaman Identify.
+            </p>
+          )}
+
+          {featured.status === 'error' && (
+            <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-rose-50 px-4 py-3">
+              <p className="flex items-center gap-2 text-[13px] font-medium text-rose-700">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                {featured.message}
+              </p>
+              <button onClick={load} disabled={loading} className="btn-ghost h-8 px-3 text-[12px]">
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+                Coba lagi
+              </button>
             </div>
-            <ul className="mt-2 space-y-1">
-              {AI_INSIGHTS.sources.map((s) => (
-                <li key={s} className="text-[12.5px] text-slate-600">
-                  {s}
-                </li>
-              ))}
-            </ul>
-          </div>
+          )}
 
-          <Link
-            to="/review"
-            className="mt-4 inline-flex items-center gap-1.5 text-[13.5px] font-semibold text-teal-700 hover:text-teal-800"
-          >
-            Buka halaman validasi kasus
-            <ArrowUpRight className="h-4 w-4" />
-          </Link>
+          {cmp && (
+            <>
+              <div className="mt-5 grid gap-4 lg:grid-cols-2 xl:grid-cols-1">
+                <SubjectPanel
+                  tag="AM"
+                  subject={featuredResult.am_subject}
+                  side={amSide}
+                  tone="bg-teal-500/15 text-teal-300 ring-1 ring-teal-400/30"
+                  dot="bg-teal-400"
+                />
+                <SubjectPanel
+                  tag="PM"
+                  subject={featuredResult.pm_subject}
+                  side={pmSide}
+                  tone="bg-amber-400/15 text-amber-300 ring-1 ring-amber-400/30"
+                  dot="bg-signal-amber"
+                />
+              </div>
+
+              {agreements.length === 0 ? (
+                <p className="mt-5 text-[12.5px] text-slate-400">
+                  Belum ada data gigi untuk dibandingkan — jalankan AI pada citra kedua subjek.
+                </p>
+              ) : (
+                <div className="mt-5 flex flex-wrap gap-2">
+                  {agreements.slice(0, MAX_AGREEMENT_CHIPS).map((a) => {
+                    const st = STATE_STYLES[a.status]
+                    return (
+                      <span key={a.label} className={`chip ring-1 ${st.chip}`}>
+                        <st.Icon className="h-3 w-3" />
+                        {a.label}
+                      </span>
+                    )
+                  })}
+                  {agreements.length > MAX_AGREEMENT_CHIPS && (
+                    <span className="chip bg-slate-100 text-slate-500 ring-1 ring-slate-200">
+                      +{agreements.length - MAX_AGREEMENT_CHIPS} lainnya
+                    </span>
+                  )}
+                </div>
+              )}
+            </>
+          )}
         </section>
       </div>
 
@@ -527,82 +628,6 @@ export default function Dashboard() {
           </div>
         )}
       </section>
-
-      {/* ── Bottom row: AM vs PM + Activity Log (simulated) ─────── */}
-      <div className="grid gap-6 xl:grid-cols-12">
-        {/* AM vs PM comparison — per-tooth comparison waits for the AI contract */}
-        <section className="card p-6 xl:col-span-7">
-          <header className="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-[17px] font-semibold text-ink">Ante-mortem vs post-mortem</h2>
-                <SimBadge />
-              </div>
-              <p className="mt-1 text-[13px] text-slate-500">
-                Pasangan rekam medis <span className="font-mono text-teal-700">PM-0418 ↔ AM-2291</span>
-                {' · '}skor evaluasi{' '}
-                <span className="font-mono font-semibold text-teal-700">{AI_INSIGHTS.confidence}%</span>
-              </p>
-            </div>
-            <Link to="/analysis" className="btn-ghost h-9 px-3.5 text-[12.5px]">
-              Buka overlay visualizer
-              <ArrowUpRight className="h-3.5 w-3.5" />
-            </Link>
-          </header>
-
-          <div className="mt-5 grid gap-5 lg:grid-cols-2">
-            <ScanPanel
-              data={COMPARISON.am}
-              tone="bg-teal-500/15 text-teal-300 ring-1 ring-teal-400/30"
-            />
-            <ScanPanel
-              data={COMPARISON.pm}
-              tone="bg-amber-400/15 text-amber-300 ring-1 ring-amber-400/30"
-            />
-          </div>
-
-          <div className="mt-5 flex flex-wrap gap-2">
-            {COMPARISON.agreements.map((a) => {
-              const s = STATE_STYLES[a.status]
-              return (
-                <span key={a.label} className={`chip ring-1 ${s.chip}`}>
-                  <s.Icon className="h-3 w-3" />
-                  {a.label}
-                </span>
-              )
-            })}
-          </div>
-        </section>
-
-        {/* Activity log */}
-        <section className="card flex flex-col p-6 xl:col-span-5">
-          <header className="mb-5 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Activity className="h-4 w-4 text-teal-700" />
-              <h2 className="text-[17px] font-semibold text-ink">Log Aktivitas Pipeline AI</h2>
-            </div>
-            <SimBadge />
-          </header>
-
-          <div className="flex-1 overflow-y-auto scroll-slim">
-            {ACTIVITY_LOG.map((entry, i) => (
-              <LogRow
-                key={`${entry.record}-${entry.time}`}
-                entry={entry}
-                isLast={i === ACTIVITY_LOG.length - 1}
-              />
-            ))}
-          </div>
-
-          <Link
-            to="/review"
-            className="mt-5 inline-flex items-center gap-1.5 border-t border-slate-100 pt-4 text-[13px] font-semibold text-teal-700 hover:text-teal-800"
-          >
-            Validasi kasus yang ditandai
-            <ArrowUpRight className="h-4 w-4" />
-          </Link>
-        </section>
-      </div>
     </div>
   )
 }

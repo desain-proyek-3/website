@@ -3,17 +3,13 @@ import { Link, useSearchParams } from 'react-router-dom'
 import {
   Activity,
   AlertTriangle,
-  CheckCircle2,
   Crosshair,
-  Download,
   FileText,
   GitCompareArrows,
   Hash,
   ImageOff,
-  Lightbulb,
   Loader2,
   Maximize2,
-  TriangleAlert,
   UploadCloud,
 } from 'lucide-react'
 import {
@@ -24,6 +20,7 @@ import {
   getDentalImage,
   getMatchingComparison,
   getMatchingResult,
+  getSubject,
   getToothRecords,
   isAiRunning,
   listMatchingResults,
@@ -31,23 +28,11 @@ import {
   listSubjects,
   runMatching,
 } from '../lib/api.js'
-import { ACTIVITY_LOG } from '../lib/data.js'
 import RunAiButton from '../components/RunAiButton.jsx'
-import SimBadge from '../components/SimBadge.jsx'
 import ToothComparisonTable from '../components/ToothComparisonTable.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 
-const BANDS = ['Low', 'Med', 'High']
 const FULL_DENTITION = 32
-// Roles allowed to see the audit-backed activity log (GET /audit is admin/examiner).
-const LOG_ROLES = ['admin', 'examiner']
-
-const LOG_STATUS = {
-  complete: { cls: 'bg-teal-50 text-teal-700 ring-teal-200', Icon: CheckCircle2, text: 'Complete' },
-  flagged: { cls: 'bg-amber-50 text-amber-700 ring-amber-200', Icon: TriangleAlert, text: 'Flagged for review' },
-  attention: { cls: 'bg-rose-50 text-rose-700 ring-rose-200', Icon: TriangleAlert, text: 'Needs re-scan' },
-  running: { cls: 'bg-slate-100 text-slate-600 ring-slate-200', Icon: Loader2, text: 'Running' },
-}
 
 const pct = (v) => (v == null ? '–' : `${(v <= 1 ? v * 100 : v).toFixed(1)}%`)
 const confValue = (t) => (t.confidence_score == null ? null : t.confidence_score <= 1 ? t.confidence_score * 100 : t.confidence_score)
@@ -270,8 +255,8 @@ export default function Analysis() {
   const [searchParams, setSearchParams] = useSearchParams()
   const imageParam = searchParams.get('image')
   const matchParam = searchParams.get('match')
+  const subjectParam = searchParams.get('subject') // dari pencarian header
 
-  const [intensity, setIntensity] = useState(62)
   const [overlay, setOverlay] = useState(true)
   const [labels, setLabels] = useState(true)
 
@@ -298,7 +283,8 @@ export default function Analysis() {
       { replace: true },
     )
 
-  // 1. PM + AM subjects; resolve the subject from ?image= or ?match= when given.
+  // 1. PM + AM subjects; resolve the subject from ?image= or ?match= when given
+  //    (?subject= ditangani efek 1b).
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -306,7 +292,9 @@ export default function Analysis() {
         const { items } = await listSubjects()
         if (cancelled) return
         setSubjects(items)
-        if (imageParam) {
+        if (subjectParam) {
+          // efek 1b
+        } else if (imageParam) {
           const img = await getDentalImage(imageParam)
           if (!cancelled) setSubjectId(img.subject_id)
         } else if (matchParam) {
@@ -328,6 +316,23 @@ export default function Analysis() {
     // only on mount — later changes to ?image= come from this page itself
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // 1b. ?subject= — saat halaman dibuka dan saat pencarian header dipakai di halaman ini.
+  //     Subjek di luar 100 terbaru diambil terpisah agar tetap muncul di dropdown.
+  useEffect(() => {
+    if (!subjectParam || loading.subjects) return
+    setSubjectId(subjectParam)
+    if (subjects.some((s) => s.id === subjectParam)) return
+    let cancelled = false
+    getSubject(subjectParam)
+      .then((s) => {
+        if (!cancelled) setSubjects((prev) => (prev.some((p) => p.id === s.id) ? prev : [s, ...prev]))
+      })
+      .catch((err) => !cancelled && setError(err.message))
+    return () => {
+      cancelled = true
+    }
+  }, [subjectParam, loading.subjects]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // 2. Images of the selected subject; keep ?image= pointing at one of them.
   useEffect(() => {
@@ -396,7 +401,6 @@ export default function Analysis() {
   const canRunAi =
     !!subject && (user?.role === 'admin' || (user?.role === 'examiner' && subject.subject_type === 'post_mortem'))
   const refreshAfterAi = () => setReloadKey((k) => k + 1)
-  const band = intensity < 34 ? 0 : intensity < 67 ? 1 : 2
   const strokeW = natural ? Math.max(natural.w, natural.h) / 400 : 1
 
   return (
@@ -593,48 +597,6 @@ export default function Analysis() {
                 <div className="mt-1 text-[12px] text-slate-400">Kandidat untuk diperiksa ulang</div>
               </div>
             </div>
-
-            {/* Distribution timeline — no backend yet */}
-            <div className="border-t border-white/10 px-5 py-5">
-              <div className="flex items-baseline justify-between gap-3">
-                <label htmlFor="dist" className="font-mono text-[10.5px] tracking-[.14em] text-slate-400">
-                  PRESSURE / FEATURE DISTRIBUTION
-                </label>
-                <div className="flex items-center gap-2">
-                  <SimBadge dark />
-                  <span className="font-mono text-[12px] text-teal-300">
-                    {BANDS[band]} · {intensity}%
-                  </span>
-                </div>
-              </div>
-              <input
-                id="dist"
-                type="range"
-                min="0"
-                max="100"
-                value={intensity}
-                onChange={(e) => setIntensity(Number(e.target.value))}
-                className="slider-forensic mt-4 w-full"
-              />
-              <div className="mt-2.5 flex justify-between">
-                {BANDS.map((b, i) => (
-                  <button
-                    key={b}
-                    onClick={() => setIntensity([17, 50, 84][i])}
-                    className={`font-mono text-[11px] tracking-[.1em] transition-colors ${
-                      band === i ? 'text-teal-300' : 'text-slate-500 hover:text-slate-300'
-                    }`}
-                  >
-                    {b.toUpperCase()}
-                  </button>
-                ))}
-              </div>
-              <p className="mt-3 max-w-[70ch] text-[12.5px] leading-snug text-slate-400">
-                Moves the weighting of the match from anterior morphology toward posterior occlusal
-                contact. At {BANDS[band].toLowerCase()} the engine leans on{' '}
-                {band === 0 ? 'incisal edges and midline' : band === 1 ? 'premolar crowns and canine relation' : 'molar cusps and inter-arch pressure points'}.
-              </p>
-            </div>
           </div>
         </section>
 
@@ -724,29 +686,6 @@ export default function Analysis() {
               </dl>
             )}
           </section>
-
-          <section className="card border-teal-200 bg-teal-50/60 p-6">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-teal-800">
-                <Lightbulb className="h-4 w-4" />
-                <h2 className="text-[15px] font-semibold">What the engine recommends</h2>
-              </div>
-              <SimBadge />
-            </div>
-            <ul className="mt-4 space-y-3">
-              {[
-                'Re-scan the right posterior segment with 15% more exposure before sign-off.',
-                'Treat the overbite difference of 0.6 mm as post-mortem jaw drift, not a mismatch.',
-                'Request the 2024 bitewing series from Klinik Sehat Palu to verify the #46 filling.',
-              ].map((r, i) => (
-                <li key={r} className="flex gap-3 text-[13.5px] leading-snug text-teal-900">
-                  <span className="mt-0.5 font-mono text-[12px] text-teal-600">{String(i + 1).padStart(2, '0')}</span>
-                  {r}
-                </li>
-              ))}
-            </ul>
-            <button className="btn-primary mt-5 h-10 w-full text-[13.5px]">Queue these actions</button>
-          </section>
         </aside>
       </div>
 
@@ -757,61 +696,6 @@ export default function Analysis() {
         reloadKey={reloadKey}
         canRunMatching={['admin', 'examiner'].includes(user?.role)}
       />
-
-      {/* Activity log — mock; real source would be GET /audit (admin/examiner only) */}
-      {LOG_ROLES.includes(user?.role) && (
-        <section className="card overflow-hidden">
-          <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-6 py-5">
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-[17px] font-semibold text-ink">System activity log</h2>
-                <SimBadge />
-              </div>
-              <p className="mt-1 text-[13px] text-slate-500">Everything the engine and the teams did on this case</p>
-            </div>
-            <button className="btn-ghost h-9 px-3.5 text-[12.5px]">
-              <Download className="h-3.5 w-3.5" />
-              Export CSV
-            </button>
-          </header>
-
-          <div className="scroll-slim overflow-x-auto">
-            <table className="w-full min-w-[720px] text-left">
-              <thead>
-                <tr className="border-b border-slate-100 bg-slate-50/70">
-                  {['Time', 'Record', 'Action', 'Detail', 'Operator', 'Status'].map((h) => (
-                    <th key={h} className="px-6 py-3 font-mono text-[10.5px] font-medium tracking-[.12em] text-slate-500">
-                      {h.toUpperCase()}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {ACTIVITY_LOG.map((row, i) => {
-                  const s = LOG_STATUS[row.status]
-                  return (
-                    <tr key={i} className="hover:bg-slate-50/60">
-                      <td className="whitespace-nowrap px-6 py-3.5 font-mono text-[12.5px] text-slate-500">{row.time}</td>
-                      <td className="whitespace-nowrap px-6 py-3.5 font-mono text-[12.5px] font-medium text-teal-700">
-                        {row.record}
-                      </td>
-                      <td className="px-6 py-3.5 text-[13.5px] font-medium text-ink">{row.action}</td>
-                      <td className="px-6 py-3.5 text-[12.5px] text-slate-500">{row.detail}</td>
-                      <td className="whitespace-nowrap px-6 py-3.5 text-[12.5px] text-slate-500">{row.operator}</td>
-                      <td className="px-6 py-3.5">
-                        <span className={`chip ring-1 ${s.cls}`}>
-                          <s.Icon className={`h-3 w-3 ${row.status === 'running' ? 'animate-spin' : ''}`} />
-                          {s.text}
-                        </span>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
     </div>
   )
 }

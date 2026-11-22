@@ -2,17 +2,15 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity,
-  Bell,
-  Clock,
   Database,
   LayoutGrid,
   LogOut,
   Menu,
-  Search,
   ShieldCheck,
   UploadCloud,
   Users,
 } from 'lucide-react'
+import HeaderSearch from './HeaderSearch.jsx'
 import Logo from './Logo.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 import { initialsOf, roleLabel } from '../lib/auth.js'
@@ -69,33 +67,6 @@ const TITLES = {
   '/users': { h: 'Manajemen user', s: 'Kelola akun petugas, role, dan status aktif' },
 }
 
-const INITIAL_NOTIFICATIONS = [
-  {
-    id: 1,
-    title: 'Kandidat Match Ditemukan',
-    desc: 'PM-0418 cocok dengan AM-2291 (Confidence: 98.4%)',
-    time: '5 mnt yang lalu',
-    unread: true,
-    type: 'success',
-  },
-  {
-    id: 2,
-    title: 'Peninjauan Ulang Diperlukan',
-    desc: 'PM-0422 memerlukan verifikasi peninjau kedua',
-    time: '25 mnt yang lalu',
-    unread: true,
-    type: 'warning',
-  },
-  {
-    id: 3,
-    title: 'Ekstraksi Fitur Selesai',
-    desc: 'Landmark 32 poin berhasil diproses untuk PM-0431',
-    time: '1 jam yang lalu',
-    unread: true,
-    type: 'info',
-  },
-]
-
 function SidebarBody({ user, counts }) {
   return (
     <div className="flex h-full flex-col bg-white text-slate-700">
@@ -141,8 +112,6 @@ function SidebarBody({ user, counts }) {
 
 export default function AppShell() {
   const [open, setOpen] = useState(true) // Collapsible sidebar state (no backdrop overlay)
-  const [showNotifications, setShowNotifications] = useState(false)
-  const [notifications, setNotifications] = useState(INITIAL_NOTIFICATIONS)
 
   const { pathname } = useLocation()
   const navigate = useNavigate()
@@ -154,15 +123,10 @@ export default function AppShell() {
     (pathname.startsWith('/review/report/')
       ? { h: 'Laporan identifikasi', s: 'Laporan format INTERPOL DVI untuk pasangan PM–AM yang dikonfirmasi' }
       : TITLES['/dashboard'])
-  const unreadCount = notifications.filter((n) => n.unread).length
 
   const handleLogout = () => {
     logout()
     navigate('/login', { replace: true })
-  }
-
-  const markAllNotificationsRead = () => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, unread: false })))
   }
 
   return (
@@ -179,7 +143,7 @@ export default function AppShell() {
       <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur shadow-sm print:hidden">
         {/* Top Bar Row */}
         <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
-          {/* Left: Menu Toggle, Logo (when the sidebar is closed) & Search Bar */}
+          {/* Left: Menu Toggle, Logo (when the sidebar is closed) & subject search */}
           <div className="flex items-center gap-3 min-w-0 flex-1">
             <button
               onClick={() => setOpen((v) => !v)}
@@ -196,83 +160,11 @@ export default function AppShell() {
 
             {!open && <Logo className="h-9 w-auto shrink-0" to="/" />}
 
-            <label className="relative flex min-w-0 max-w-[420px] flex-1 items-center">
-              <Search className="pointer-events-none absolute left-3.5 h-[18px] w-[18px] text-slate-400" />
-              <span className="sr-only">Search records</span>
-              <input
-                type="search"
-                placeholder="Cari ID korban, rekam PM, atau dental chart…"
-                className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50/50 pl-11 pr-4 text-[14px]
-                           placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none
-                           focus:ring-4 focus:ring-teal-500/10 shadow-sm transition-all"
-              />
-            </label>
+            <HeaderSearch />
           </div>
 
-          {/* Right: Notifications & User Profile */}
+          {/* Right: User Profile */}
           <div className="flex items-center gap-3 shrink-0">
-            {/* Interactive Notifications Popover */}
-            <div className="relative">
-              <button
-                onClick={() => setShowNotifications((v) => !v)}
-                className={`relative rounded-xl border p-2.5 text-slate-600 transition-colors shadow-sm ${
-                  showNotifications ? 'border-teal-500 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white hover:bg-slate-50'
-                }`}
-                aria-label="Notifications"
-              >
-                <Bell className="h-[18px] w-[18px]" />
-                {unreadCount > 0 && (
-                  <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-signal-amber font-mono text-[10px] font-bold text-white ring-2 ring-white">
-                    {unreadCount}
-                  </span>
-                )}
-              </button>
-
-              {/* Notifications Dropdown */}
-              {showNotifications && (
-                <div className="absolute right-0 mt-2 w-80 sm:w-96 rounded-2xl border border-slate-200 bg-white p-4 shadow-xl z-50 animate-in fade-in slide-in-from-top-2">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                    <div className="flex items-center gap-2">
-                      <Bell className="h-4 w-4 text-teal-700" />
-                      <h3 className="text-[14px] font-bold text-ink">Notifikasi DVI</h3>
-                    </div>
-                    {unreadCount > 0 && (
-                      <button
-                        onClick={markAllNotificationsRead}
-                        className="text-[11.5px] font-semibold text-teal-700 hover:text-teal-900"
-                      >
-                        Tandai Dibaca
-                      </button>
-                    )}
-                  </div>
-
-                  <ul className="mt-2 divide-y divide-slate-100 max-h-72 overflow-y-auto scroll-slim">
-                    {notifications.map((n) => (
-                      <li key={n.id} className={`py-3 px-1 transition-colors ${n.unread ? 'bg-teal-50/40 rounded-xl px-2' : ''}`}>
-                        <div className="flex items-start justify-between gap-2">
-                          <span className="text-[13px] font-bold text-ink">{n.title}</span>
-                          <span className="flex items-center gap-1 font-mono text-[10.5px] text-slate-400 shrink-0">
-                            <Clock className="h-3 w-3" />
-                            {n.time}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-[12px] leading-snug text-slate-600">{n.desc}</p>
-                      </li>
-                    ))}
-                  </ul>
-
-                  <div className="mt-3 border-t border-slate-100 pt-2 text-center">
-                    <button
-                      onClick={() => setShowNotifications(false)}
-                      className="text-[12px] font-semibold text-slate-500 hover:text-slate-800"
-                    >
-                      Tutup
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-
             {/* Account Profile Badge in Header */}
             <div
               className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-1.5 pr-3 shadow-sm"

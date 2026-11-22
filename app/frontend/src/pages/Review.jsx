@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   ArrowRight,
   BrainCircuit,
-  CalendarClock,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -21,7 +20,6 @@ import {
   ShieldQuestion,
   X,
 } from 'lucide-react'
-import SimBadge from '../components/SimBadge.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 import {
   MATCH_THRESHOLDS,
@@ -33,7 +31,6 @@ import {
   listSubjectImages,
   matchTier,
 } from '../lib/api.js'
-import { FOLLOW_UP } from '../lib/data.js'
 
 // Backend roles allowed to confirm/reject a match (POST /matching-results/{id}/confirm).
 const DECIDE_ROLES = ['admin', 'examiner']
@@ -560,6 +557,39 @@ export default function Review() {
               </div>
             </section>
           )}
+        </div>
+
+        {/* Right column: Pair metadata & queue list */}
+        <div className="space-y-5 xl:col-span-5">
+          {active && (
+            <section className="card-dark overflow-hidden">
+              <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+                <div>
+                  <h3 className="text-[14.5px] font-semibold text-white">Metadata Pasangan</h3>
+                  <p className="mt-0.5 font-mono text-[11px] tracking-[.1em] text-slate-400">
+                    MATCH {shortId(active.id)}
+                  </p>
+                </div>
+                <span className="chip bg-white/[0.06] text-slate-300">{fmtDate(active.created_at)}</span>
+              </div>
+
+              <dl className="divide-y divide-white/[0.07] p-5 text-[13px]">
+                {[
+                  ['Subjek PM', <span className="font-mono font-semibold text-teal-300">{shortId(active.pm_subject_id)}</span>],
+                  ['Referensi kasus PM', <span className="text-slate-200">{active.pm_subject?.case_reference || '–'}</span>],
+                  ['Kandidat AM', <span className="font-mono text-slate-200">{shortId(active.am_subject_id)}</span>],
+                  ['Referensi kasus AM', <span className="text-slate-200">{active.am_subject?.case_reference || '–'}</span>],
+                  ['Klasifikasi skor', <span className={`font-mono font-bold ${tone.text}`}>{tone.shortLabel}</span>],
+                  ['Status review', <span className="font-mono text-slate-200">{DECISION_CHIP[active.status].word}</span>],
+                ].map(([label, val]) => (
+                  <div key={label} className="flex items-center justify-between gap-4 py-2.5">
+                    <dt className="text-slate-400">{label}</dt>
+                    <dd className="truncate">{val}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          )}
 
           {/* Queue List */}
           <section className="card p-5">
@@ -622,72 +652,6 @@ export default function Review() {
                 ))}
               </div>
             )}
-          </section>
-        </div>
-
-        {/* Right column: Pair metadata & follow-up */}
-        <div className="space-y-5 xl:col-span-5">
-          {active && (
-            <section className="card-dark overflow-hidden">
-              <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-                <div>
-                  <h3 className="text-[14.5px] font-semibold text-white">Metadata Pasangan</h3>
-                  <p className="mt-0.5 font-mono text-[11px] tracking-[.1em] text-slate-400">
-                    MATCH {shortId(active.id)}
-                  </p>
-                </div>
-                <span className="chip bg-white/[0.06] text-slate-300">{fmtDate(active.created_at)}</span>
-              </div>
-
-              <dl className="divide-y divide-white/[0.07] p-5 text-[13px]">
-                {[
-                  ['Subjek PM', <span className="font-mono font-semibold text-teal-300">{shortId(active.pm_subject_id)}</span>],
-                  ['Referensi kasus PM', <span className="text-slate-200">{active.pm_subject?.case_reference || '–'}</span>],
-                  ['Kandidat AM', <span className="font-mono text-slate-200">{shortId(active.am_subject_id)}</span>],
-                  ['Referensi kasus AM', <span className="text-slate-200">{active.am_subject?.case_reference || '–'}</span>],
-                  ['Klasifikasi skor', <span className={`font-mono font-bold ${tone.text}`}>{tone.shortLabel}</span>],
-                  ['Status review', <span className="font-mono text-slate-200">{DECISION_CHIP[active.status].word}</span>],
-                ].map(([label, val]) => (
-                  <div key={label} className="flex items-center justify-between gap-4 py-2.5">
-                    <dt className="text-slate-400">{label}</dt>
-                    <dd className="truncate">{val}</dd>
-                  </div>
-                ))}
-              </dl>
-            </section>
-          )}
-
-          {/* Follow-up Timeline — no backend entity yet */}
-          <section className="card p-6">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <CalendarClock className="h-4 w-4 text-teal-700" />
-                <h3 className="text-[15px] font-semibold text-ink">Jadwal Rekonsiliasi Tim</h3>
-              </div>
-              <SimBadge />
-            </div>
-            <p className="mt-1 text-[12.5px] text-slate-500">
-              Hari ini
-            </p>
-
-            <ol className="mt-5 space-y-0">
-              {FOLLOW_UP.map((f, i) => (
-                <li key={f.time} className="flex gap-4">
-                  <div className="flex flex-col items-center">
-                    <span className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full bg-teal-600" />
-                    {i < FOLLOW_UP.length - 1 && <span className="mt-1 w-px flex-1 bg-slate-200" />}
-                  </div>
-
-                  <div className="min-w-0 pb-5">
-                    <div className="font-mono text-[12px] font-semibold text-teal-700">{f.time}</div>
-                    <div className="mt-0.5 text-[13.5px] font-semibold text-ink">{f.title}</div>
-                    <div className="mt-0.5 truncate text-[12px] text-slate-500">
-                      {f.who} · <span className="text-slate-400">{f.place}</span>
-                    </div>
-                  </div>
-                </li>
-              ))}
-            </ol>
           </section>
         </div>
       </div>

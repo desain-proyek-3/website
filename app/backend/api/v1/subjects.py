@@ -13,7 +13,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select, update
+from sqlalchemy import String, cast, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
@@ -71,11 +71,24 @@ async def create_subject(
     return SubjectResponse.model_validate(new_subject)
 
 
+SEARCH_MIN_LENGTH = 2
+SEARCH_MAX_LENGTH = 100
+
+
+def _escape_like(term: str) -> str:
+    """Escape wildcard LIKE (`%`, `_`) agar kata kunci dicocokkan apa adanya (escape char `\\`)."""
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 @router.get(
     "",
     response_model=SubjectListResponse,
     summary="List Subjects",
-    description="Mendapatkan daftar subjek aktif (bukan soft-deleted). Dapat diakses semua role.",
+    description=(
+        "Mendapatkan daftar subjek aktif (bukan soft-deleted), terbaru dulu. Dapat diakses semua role. "
+        "Parameter `q` (opsional, min. 2 karakter) mencari di nama lengkap & referensi kasus "
+        "(tidak peka huruf besar/kecil) serta awalan ID subjek."
+    ),
 )
 async def list_subjects(
     request: Request,
@@ -84,14 +97,37 @@ async def list_subjects(
     limit: int = Query(50, ge=1, le=100, description="Jumlah record per halaman"),
     offset: int = Query(0, ge=0, description="Offset index record"),
     subject_type: SubjectType | None = Query(None, description="Filter tipe subjek: ante_mortem atau post_mortem"),
+    q: str | None = Query(
+        None,
+        max_length=SEARCH_MAX_LENGTH,
+        description="Kata kunci: nama lengkap / referensi kasus (mengandung, case-insensitive) atau awalan ID subjek",
+    ),
 ) -> SubjectListResponse:
-    """Mengambil daftar subjek dengan paginasi dan filter tipe."""
-    stmt = select(Subject).where(Subject.is_deleted == False)
-    count_stmt = select(func.count()).select_from(Subject).where(Subject.is_deleted == False)
+    """Mengambil daftar subjek dengan paginasi, filter tipe, dan pencarian kata kunci."""
+    filters = [Subject.is_deleted == False]
 
     if subject_type:
-        stmt = stmt.where(Subject.subject_type == subject_type)
-        count_stmt = count_stmt.where(Subject.subject_type == subject_type)
+        filters.append(Subject.subject_type == subject_type)
+
+    if q is not None:
+        term = q.strip()
+        if len(term) < SEARCH_MIN_LENGTH:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Kata kunci pencarian minimal {SEARCH_MIN_LENGTH} karakter",
+            )
+        contains = f"%{_escape_like(term)}%"
+        id_prefix = f"{_escape_like(term.lower())}%"
+        filters.append(
+            or_(
+                Subject.full_name.ilike(contains, escape="\\"),
+                Subject.case_reference.ilike(contains, escape="\\"),
+                cast(Subject.id, String).like(id_prefix, escape="\\"),
+            )
+        )
+
+    stmt = select(Subject).where(*filters)
+    count_stmt = select(func.count()).select_from(Subject).where(*filters)
 
     stmt = stmt.order_by(Subject.created_at.desc()).offset(offset).limit(limit)
 

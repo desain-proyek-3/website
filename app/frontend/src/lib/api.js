@@ -161,13 +161,19 @@ export function createSubject(payload) {
 }
 
 /**
- * @param {{ subjectType?: 'ante_mortem'|'post_mortem', limit?: number }} opts
+ * @param {{ subjectType?: 'ante_mortem'|'post_mortem', limit?: number, q?: string, signal?: AbortSignal }} opts
+ *   q = kata kunci (min. 2 karakter): nama / referensi kasus (mengandung) atau awalan ID subjek
  * @returns {Promise<{ items: object[], total: number }>} newest first
  */
-export function listSubjects({ subjectType, limit = 100 } = {}) {
-  const q = new URLSearchParams({ limit: String(limit) })
-  if (subjectType) q.set('subject_type', subjectType)
-  return apiFetch(`/api/v1/subjects?${q}`)
+export function listSubjects({ subjectType, limit = 100, q, signal } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (subjectType) params.set('subject_type', subjectType)
+  if (q) params.set('q', q)
+  return apiFetch(`/api/v1/subjects?${params}`, { signal })
+}
+
+export function getSubject(subjectId) {
+  return apiFetch(`/api/v1/subjects/${subjectId}`)
 }
 
 /** Soft-delete a subject together with its active images (admin-only for AM subjects). */
