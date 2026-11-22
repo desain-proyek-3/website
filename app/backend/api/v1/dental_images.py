@@ -43,6 +43,7 @@ from schemas.dental_image import (
     ViewType,
 )
 from schemas.tooth_record import ToothRecordListResponse, ToothRecordResponse
+from services.subject_embedding import recompute_subject_embedding
 from services.inference_status import ai_status_for_images, completed_job_exists
 from services.storage_service import storage_service
 
@@ -329,10 +330,15 @@ async def delete_dental_image(
     subject_type = await db.scalar(select(Subject.subject_type).where(Subject.id == image.subject_id))
     ensure_can_modify_subject_type(current_user, subject_type)
 
+    # Kunci subjek (sama seperti penyimpanan hasil AI) lalu hitung ulang embedding subjek
+    # tanpa citra ini — embedding = rata-rata citra aktif (services/subject_embedding.py).
+    await db.execute(select(Subject.id).where(Subject.id == image.subject_id).with_for_update())
+
     now = datetime.now(timezone.utc)
     image.is_deleted = True
     image.deleted_at = now
     image.deleted_by = current_user.id
+    await recompute_subject_embedding(db, image.subject_id, now)
 
     await db.commit()
     await db.refresh(image)

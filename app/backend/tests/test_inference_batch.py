@@ -163,11 +163,12 @@ class TestInferenceBatch(unittest.TestCase):
             self.assertTrue(imgs[img_id]["ai_processed"])
             status, teeth = make_request(f"/api/v1/dental-images/{img_id}/tooth-records", token=self.viewer)
             self.assertGreater(teeth["total"], 0)
-            self.assertIn("rotasi_derajat", teeth["items"][0]["morphology_features"])
+            self.assertIn("rotation", teeth["items"][0]["morphology_features"])
+            self.assertIsInstance(teeth["items"][0]["bbox"], list)  # [x, y, w, h] seperti AI asli
 
         async def embedding_version(session):
             return await session.scalar(select(Embedding.model_version).where(Embedding.subject_id == UUID(self.pm2)))
-        self.assertEqual(run_db(embedding_version), "ai_engine_v1")
+        self.assertEqual(run_db(embedding_version), "mock-resnet-d512/mean3")  # rata-rata 3 sudut
 
         _, pm_ids = self.unprocessed_ids("post_mortem")
         self.assertFalse(set(self.pm2_imgs) & pm_ids)

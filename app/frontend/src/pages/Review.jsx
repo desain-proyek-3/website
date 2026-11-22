@@ -23,7 +23,6 @@ import {
 } from 'lucide-react'
 import SimBadge from '../components/SimBadge.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { usePosko } from '../context/PoskoContext.jsx'
 import {
   MATCH_THRESHOLDS,
   MATCH_TIER_NOTE,
@@ -170,7 +169,6 @@ function SubjectImages({ tag, subject, images }) {
 /* ─── Page ────────────────────────────────────────────────────── */
 export default function Review() {
   const { user } = useAuth()
-  const { posko } = usePosko()
   const canDecide = DECIDE_ROLES.includes(user?.role)
   const [searchParams, setSearchParams] = useSearchParams()
   const pmFilter = searchParams.get('pm')
@@ -669,7 +667,7 @@ export default function Review() {
               <SimBadge />
             </div>
             <p className="mt-1 text-[12.5px] text-slate-500">
-              Hari ini · <span className="font-medium text-slate-600">{posko}</span>
+              Hari ini
             </p>
 
             <ol className="mt-5 space-y-0">

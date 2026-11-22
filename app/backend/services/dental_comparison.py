@@ -3,9 +3,10 @@ Dentify Services — Dental Comparison (PM vs AM per gigi)
 Membandingkan hasil deteksi AI (`tooth_records`) subjek post-mortem dan ante-mortem
 per nomor FDI: keberadaan gigi, confidence, dan delta tiap fitur morfologi.
 
-⚠️ Kontrak `morphology_features` dari tim AI BELUM final (PRD §6 menyebut mis.
-   {"diastema": 0, "tambalan": 1, ...}). Seluruh asumsi bentuk data morfologi
-   TERISOLASI di modul ini — bila kontrak berubah, cukup sesuaikan file ini.
+Kontrak AI asli (16 Nov 2026): `morphology` = 7 flag 0/1 per gigi — diastema, rotation,
+restoration, missing, crowding, anomaly, caries. Modul ini sengaja generik (fitur apa pun,
+angka/bool/string) — asumsi bentuk data morfologi tetap TERISOLASI di sini.
+Satu citra bisa berisi FDI ganda (deteksi dobel) — ditangani agregasi confidence tertinggi.
 
 Aturan delta (generik, tanpa mengarang makna klinis):
 - angka (int/float, bukan bool) → delta = PM − AM; "same" bila |delta| ≤ NUMERIC_TOLERANCE

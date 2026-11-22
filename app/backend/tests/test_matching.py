@@ -19,6 +19,7 @@ Embedding & matching_results uji dihapus, subjek di-soft-delete, dan akun uji
 dinonaktifkan di tearDownClass.
 """
 
+import os
 import asyncio
 import json
 import math
@@ -41,7 +42,7 @@ from core.database import async_session_factory, engine
 from models.embedding import Embedding
 from models.matching_result import MatchingResult
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = os.environ.get("DENTIFY_TEST_BASE_URL", "http://127.0.0.1:8000")
 TEST_MODEL_VERSION = "test_matching"
 
 

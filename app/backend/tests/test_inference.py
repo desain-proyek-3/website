@@ -9,13 +9,14 @@ Menguji alur inference jobs:
 6. Proteksi autentikasi (401 Unauthorized tanpa token)
 """
 
+import os
 import json
 import unittest
 import urllib.error
 import urllib.request
 from uuid import uuid4
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = os.environ.get("DENTIFY_TEST_BASE_URL", "http://127.0.0.1:8000")
 
 
 def make_request(

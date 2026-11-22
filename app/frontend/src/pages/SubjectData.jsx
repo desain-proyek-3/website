@@ -1,0 +1,642 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
+import {
+  AlertTriangle,
+  ArrowUpRight,
+  CheckCircle2,
+  Loader2,
+  RotateCcw,
+  Search,
+  Sparkles,
+  Trash2,
+  UploadCloud,
+  UserPlus,
+  X,
+} from 'lucide-react'
+import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import DentalUploadPanel from '../components/DentalUploadPanel.jsx'
+import RunAiButton from '../components/RunAiButton.jsx'
+import {
+  AI_STATUS_LABEL,
+  VIEW_TYPES,
+  createSubject,
+  deleteSubject,
+  isAiRunning,
+  listSubjectImages,
+  listSubjects,
+  triggerInferenceBatch,
+} from '../lib/api.js'
+import { useDentalUpload } from '../lib/useDentalUpload.js'
+
+// Admin-only page (route guard); the backend also restricts AM changes to admins.
+const NO_ACCESS_MSG = 'Data subjek hanya dapat dikelola oleh admin.'
+
+/**
+ * Per subject type: wording + whether subjects can be created here.
+ * Post-mortem subjects are created only from Upload & identify (/identify).
+ */
+const TYPES = {
+  ante_mortem: {
+    param: 'am',
+    tab: 'Ante-mortem',
+    db: 'Database ante-mortem',
+    readout: 'SUBJEK ANTE-MORTEM',
+    noun: 'subjek ante-mortem',
+    empty: 'Belum ada data ante-mortem.',
+    canCreate: true,
+    aiHint:
+      'Citra diproses AI agar deteksi gigi & embedding subjek tersimpan sebagai pembanding untuk pencocokan ' +
+      'dengan data post-mortem.',
+  },
+  post_mortem: {
+    param: 'pm',
+    tab: 'Post-mortem',
+    db: 'Database post-mortem',
+    readout: 'SUBJEK POST-MORTEM',
+    noun: 'subjek post-mortem',
+    empty: 'Belum ada data post-mortem.',
+    canCreate: false,
+    aiHint:
+      'Citra diproses AI agar deteksi gigi & embedding subjek tersimpan; pencarian kandidat ante-mortem ' +
+      'dilakukan di Feature analysis.',
+  },
+}
+const TYPE_BY_PARAM = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v.param, k]))
+
+const EMPTY_FORM = { full_name: '', case_reference: '', notes: '' }
+
+const inputCls =
+  'mt-1.5 block h-10 w-full rounded-xl border border-slate-200 bg-white px-3.5 text-[13.5px] ' +
+  'placeholder:text-slate-400 focus:border-teal-500 focus:outline-none focus:ring-4 focus:ring-teal-500/10'
+
+const displayName = (s) => s.full_name || 'Tanpa nama'
+
+function AngleChips({ views }) {
+  return (
+    <div className="flex gap-1">
+      {VIEW_TYPES.map((v) => {
+        const on = views?.includes(v.value)
+        return (
+          <span
+            key={v.value}
+            title={`${v.label}: ${on ? 'sudah ada citra' : 'belum ada citra'}`}
+            className={`rounded-md px-1.5 py-0.5 font-mono text-[10px] tracking-wider ring-1 ${
+              on ? 'bg-teal-50 text-teal-700 ring-teal-200' : 'bg-white text-slate-300 ring-slate-200'
+            }`}
+          >
+            {v.label.toUpperCase()}
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
+const AI_CHIP = {
+  none: 'bg-slate-100 text-slate-600 ring-slate-200',
+  pending: 'bg-sky-50 text-sky-700 ring-sky-200',
+  processing: 'bg-sky-50 text-sky-700 ring-sky-200',
+  completed: 'bg-teal-50 text-teal-700 ring-teal-200',
+  failed: 'bg-rose-50 text-rose-700 ring-rose-200',
+}
+
+/**
+ * Stored images of the selected subject with their AI status, so images without
+ * AI results (migrated dataset / failed runs) can be processed later.
+ */
+function StoredImagesAi({ subjectId, refreshKey }) {
+  const [images, setImages] = useState(null)
+  const [error, setError] = useState('')
+  const [batchMsg, setBatchMsg] = useState('')
+  const [batchBusy, setBatchBusy] = useState(false)
+  const [reload, setReload] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    setError('')
+    listSubjectImages(subjectId)
+      .then(({ items }) => {
+        if (cancelled) return
+        const order = VIEW_TYPES.map((v) => v.value)
+        setImages([...items].sort((a, b) => order.indexOf(a.view_type) - order.indexOf(b.view_type)))
+      })
+      .catch((err) => !cancelled && setError(err.message))
+    return () => {
+      cancelled = true
+    }
+  }, [subjectId, refreshKey, reload])
+
+  useEffect(() => setBatchMsg(''), [subjectId])
+
+  if (error) return <p className="mt-4 text-[12.5px] text-rose-700">{error}</p>
+  if (!images || images.length === 0) return null
+
+  const pending = images.filter((i) => !i.ai_processed && !isAiRunning(i.ai_status))
+
+  const processAll = async () => {
+    setBatchBusy(true)
+    setBatchMsg('')
+    try {
+      const res = await triggerInferenceBatch(pending.map((i) => i.id))
+      setBatchMsg(`${res.jobs.length} citra masuk antrean AI${res.skipped.length ? `, ${res.skipped.length} dilewati` : ''}.`)
+      setReload((k) => k + 1)
+    } catch (err) {
+      setBatchMsg(err.message)
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  return (
+    <div className="mt-4 rounded-xl border border-slate-200 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-[13px] font-semibold text-ink">Citra tersimpan &amp; status AI</h3>
+        {pending.length > 1 && (
+          <button onClick={processAll} disabled={batchBusy} className="btn-ghost h-8 px-3 text-[12px]">
+            {batchBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+            Proses {pending.length} citra yang belum diproses
+          </button>
+        )}
+      </div>
+      {batchMsg && <p className="mt-2 text-[12px] text-slate-600">{batchMsg}</p>}
+      <ul className="mt-3 divide-y divide-slate-100">
+        {images.map((img) => (
+          <li key={img.id} className="flex flex-wrap items-center justify-between gap-3 py-2.5">
+            <div className="flex items-center gap-2.5">
+              <span className="w-12 font-mono text-[11px] tracking-wider text-slate-500">
+                {(VIEW_TYPES.find((v) => v.value === img.view_type)?.label || img.view_type).toUpperCase()}
+              </span>
+              <span className={`chip ring-1 ${AI_CHIP[img.ai_status] || AI_CHIP.none}`}>
+                {AI_STATUS_LABEL[img.ai_status] || AI_STATUS_LABEL.none}
+              </span>
+              {img.ai_processed && img.ai_status !== 'completed' && (
+                <span className="text-[11px] text-slate-400">(hasil sebelumnya tersedia)</span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              {img.ai_processed && (
+                <Link to={`/analysis?image=${img.id}`} className="text-[12px] font-semibold text-teal-700 hover:text-teal-800">
+                  Lihat hasil
+                </Link>
+              )}
+              {(!img.ai_processed || img.ai_status === 'failed') && (
+                <RunAiButton image={img} canRun size="sm" onDone={() => setReload((k) => k + 1)} />
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+export default function SubjectData() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const type = TYPE_BY_PARAM[searchParams.get('type')] || 'ante_mortem'
+  const meta = TYPES[type]
+
+  // Lists are cached per type so switching tabs doesn't refetch every time.
+  const [subjectsByType, setSubjectsByType] = useState({ ante_mortem: null, post_mortem: null })
+  const [viewsBySubject, setViewsBySubject] = useState({})
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const [query, setQuery] = useState('')
+
+  const [selectedId, setSelectedId] = useState(null)
+  const [creating, setCreating] = useState(false)
+  const [form, setForm] = useState(EMPTY_FORM)
+  const [formBusy, setFormBusy] = useState(false)
+  const [formError, setFormError] = useState('')
+  const [lastResult, setLastResult] = useState(null)
+  const [notice, setNotice] = useState('')
+
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
+
+  const subjects = subjectsByType[type] || []
+
+  const load = useCallback(async (subjectType) => {
+    setLoading(true)
+    setLoadError('')
+    try {
+      const { items } = await listSubjects({ subjectType })
+      setSubjectsByType((m) => ({ ...m, [subjectType]: items }))
+      const entries = await Promise.all(
+        items.map((s) =>
+          listSubjectImages(s.id)
+            .then(({ items: imgs }) => [s.id, imgs.map((i) => i.view_type)])
+            .catch(() => [s.id, null]),
+        ),
+      )
+      setViewsBySubject((m) => ({ ...m, ...Object.fromEntries(entries) }))
+    } catch (err) {
+      setLoadError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  // First visit of a tab → fetch its list.
+  useEffect(() => {
+    if (subjectsByType[type] === null) load(type)
+  }, [type, subjectsByType, load])
+
+  const switchType = (next) => {
+    if (next === type) return
+    setSearchParams({ type: TYPES[next].param }, { replace: true })
+    setSelectedId(null)
+    setCreating(false)
+    setLastResult(null)
+    setNotice('')
+    setQuery('')
+    setLoadError('')
+  }
+
+  const upload = useDentalUpload(selectedId, {
+    noAccessMessage: NO_ACCESS_MSG,
+    onCompleted: ({ imageId, view, teeth }) => {
+      const confs = teeth.map((t) => t.confidence).filter((c) => c != null)
+      setLastResult({
+        imageId,
+        view,
+        count: teeth.length,
+        avg: confs.length ? confs.reduce((a, b) => a + b, 0) / confs.length : null,
+      })
+    },
+  })
+
+  // Keep the list's angle chips in sync with uploads on the selected subject.
+  useEffect(() => {
+    if (selectedId) setViewsBySubject((m) => ({ ...m, [selectedId]: upload.filledViews }))
+  }, [selectedId, upload.filledViews])
+
+  useEffect(() => {
+    if (upload.phase === 'idle' || upload.phase === 'uploading') setLastResult(null)
+  }, [upload.phase])
+
+  const openDelete = () => {
+    setDeleteError('')
+    setConfirmOpen(true)
+  }
+
+  const closeDelete = useCallback(() => setConfirmOpen(false), [])
+
+  const confirmDelete = async () => {
+    const target = subjects.find((s) => s.id === selectedId)
+    if (!target) return
+    setDeleting(true)
+    setDeleteError('')
+    try {
+      await deleteSubject(target.id)
+      setSubjectsByType((m) => ({ ...m, [type]: (m[type] || []).filter((s) => s.id !== target.id) }))
+      setViewsBySubject(({ [target.id]: _removed, ...rest }) => rest)
+      setSelectedId(null)
+      setLastResult(null)
+      setConfirmOpen(false)
+      setNotice(`Subjek "${displayName(target)}" beserta citranya telah dihapus.`)
+    } catch (err) {
+      setDeleteError(err.status === 403 ? NO_ACCESS_MSG : err.message)
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  const select = (id) => {
+    setNotice('')
+    setCreating(false)
+    setSelectedId(id)
+    setLastResult(null)
+  }
+
+  const openCreate = () => {
+    setNotice('')
+    setSelectedId(null)
+    setCreating(true)
+    setForm(EMPTY_FORM)
+    setFormError('')
+  }
+
+  // Only ante-mortem subjects are created here (post-mortem → /identify).
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!form.full_name.trim()) {
+      setFormError('Nama lengkap wajib diisi untuk data ante-mortem.')
+      return
+    }
+    setFormBusy(true)
+    setFormError('')
+    try {
+      const created = await createSubject({
+        subject_type: 'ante_mortem',
+        full_name: form.full_name.trim(),
+        case_reference: form.case_reference.trim() || null,
+        notes: form.notes.trim() || null,
+      })
+      setSubjectsByType((m) => ({ ...m, ante_mortem: [created, ...(m.ante_mortem || [])] }))
+      setViewsBySubject((m) => ({ ...m, [created.id]: [] }))
+      select(created.id)
+    } catch (err) {
+      setFormError(err.status === 403 ? NO_ACCESS_MSG : err.message)
+    } finally {
+      setFormBusy(false)
+    }
+  }
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return subjects
+    return subjects.filter((s) =>
+      [s.full_name, s.case_reference, s.notes, s.id].some((v) => v?.toLowerCase().includes(q)),
+    )
+  }, [subjects, query])
+
+  const selected = subjects.find((s) => s.id === selectedId)
+  const completeCount = subjects.filter((s) => viewsBySubject[s.id]?.length === VIEW_TYPES.length).length
+  const listLoading = loading || subjectsByType[type] === null
+
+  const selectedImageCount = selected ? upload.filledViews.length : 0
+
+  return (
+    <div className="space-y-6">
+      {notice && (
+        <div className="flex items-start gap-3 rounded-xl border border-teal-200 bg-teal-50 px-4 py-3">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-teal-700" />
+          <p className="flex-1 text-[13px] text-teal-900">{notice}</p>
+          <button onClick={() => setNotice('')} aria-label="Tutup" className="text-teal-700 hover:text-teal-900">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      <div className="grid gap-6 xl:grid-cols-12">
+        {/* Subject list */}
+        <section className="card p-6 xl:col-span-5">
+          <div role="tablist" aria-label="Jenis subjek" className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
+            {Object.entries(TYPES).map(([key, t]) => {
+              const active = key === type
+              const count = subjectsByType[key]?.length
+              return (
+                <button
+                  key={key}
+                  role="tab"
+                  aria-selected={active}
+                  disabled={upload.busy}
+                  title={upload.busy ? 'Tunggu proses upload/AI selesai' : undefined}
+                  onClick={() => switchType(key)}
+                  className={`flex items-center gap-2 rounded-lg px-4 py-1.5 text-[13px] font-medium transition-colors disabled:cursor-not-allowed
+                    ${active ? 'bg-white text-teal-700 shadow-sm' : 'text-slate-600 hover:text-ink'}`}
+                >
+                  {t.tab}
+                  {count != null && <span className="font-mono text-[11px] text-slate-400">{count}</span>}
+                </button>
+              )
+            })}
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-[17px] font-semibold text-ink">{meta.db}</h2>
+              <p className="mt-0.5 text-[13px] text-slate-500">
+                {listLoading ? 'Memuat…' : `${subjects.length} subjek · ${completeCount} lengkap 3 sudut`}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => load(type)} disabled={loading} className="btn-ghost h-10 px-3" aria-label="Muat ulang">
+                <RotateCcw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+              </button>
+              {meta.canCreate && (
+                <button onClick={openCreate} className="btn-primary h-10 px-4 text-[13.5px]">
+                  <UserPlus className="h-4 w-4" />
+                  Subjek AM baru
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="relative mt-4">
+            <Search className="pointer-events-none absolute left-3.5 top-3 h-4 w-4 text-slate-400" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Cari nama, referensi kasus, catatan…"
+              aria-label={`Cari ${meta.noun}`}
+              className={`${inputCls.replace('mt-1.5 ', '')} pl-10`}
+            />
+          </div>
+
+          {loadError && (
+            <div className="mt-4 flex items-start gap-2.5 rounded-xl bg-rose-50 px-4 py-3">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />
+              <p className="text-[13px] text-rose-800">{loadError}</p>
+            </div>
+          )}
+
+          <ul className="mt-4 max-h-[560px] space-y-2 overflow-y-auto scroll-slim pr-1">
+            {!listLoading && filtered.length === 0 && (
+              <li className="py-8 text-center text-[13px] text-slate-400">
+                {subjects.length ? 'Tidak ada subjek yang cocok.' : meta.empty}
+              </li>
+            )}
+            {filtered.map((s) => (
+              <li key={s.id}>
+                <button
+                  onClick={() => select(s.id)}
+                  className={`w-full rounded-xl border px-4 py-3 text-left transition-colors ${
+                    s.id === selectedId
+                      ? 'border-teal-400 bg-teal-50/60'
+                      : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50/60'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className={`truncate text-[13.5px] font-semibold ${s.full_name ? 'text-ink' : 'italic text-slate-500'}`}>
+                        {displayName(s)}
+                      </div>
+                      <div className="truncate font-mono text-[11px] text-slate-500">
+                        {s.id.slice(0, 8)}
+                        {s.case_reference && ` · ${s.case_reference}`}
+                      </div>
+                    </div>
+                    <AngleChips views={viewsBySubject[s.id]} />
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        {/* Detail / create / upload */}
+        <section className="card p-6 xl:col-span-7">
+          {creating && meta.canCreate ? (
+            <form onSubmit={submit} className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <UserPlus className="h-5 w-5 text-teal-700" />
+                  <h2 className="text-[17px] font-semibold text-ink">Subjek ante-mortem baru</h2>
+                </div>
+                <button type="button" onClick={() => setCreating(false)} className="btn-ghost h-9 px-3 text-[12.5px]">
+                  <X className="h-3.5 w-3.5" />
+                  Batal
+                </button>
+              </div>
+              <p className="text-[13px] text-slate-500">
+                Data gigi semasa hidup dari keluarga atau klinik. Identitas wajib diisi; citra diunggah
+                per sudut (depan, kiri, kanan) setelah subjek dibuat.
+              </p>
+              <div>
+                <label htmlFor="am-name" className="block text-[12.5px] font-medium text-slate-700">
+                  Nama lengkap
+                </label>
+                <input
+                  id="am-name"
+                  maxLength={255}
+                  value={form.full_name}
+                  onChange={(e) => setForm((f) => ({ ...f, full_name: e.target.value }))}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label htmlFor="am-case" className="block text-[12.5px] font-medium text-slate-700">
+                  Referensi kasus <span className="font-normal text-slate-400">(opsional)</span>
+                </label>
+                <input
+                  id="am-case"
+                  maxLength={100}
+                  value={form.case_reference}
+                  onChange={(e) => setForm((f) => ({ ...f, case_reference: e.target.value }))}
+                  placeholder="Nomor laporan orang hilang / insiden"
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label htmlFor="am-notes" className="block text-[12.5px] font-medium text-slate-700">
+                  Catatan <span className="font-normal text-slate-400">(opsional)</span>
+                </label>
+                <textarea
+                  id="am-notes"
+                  rows={3}
+                  value={form.notes}
+                  onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+                  placeholder="Sumber data (klinik, no. rekam medis), riwayat perawatan gigi, kontak keluarga…"
+                  className={`${inputCls} h-auto py-2.5`}
+                />
+              </div>
+              {formError && (
+                <p className="flex items-center gap-2 text-[12.5px] font-medium text-rose-600">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  {formError}
+                </p>
+              )}
+              <button type="submit" disabled={formBusy} className="btn-primary h-10 px-5 text-[13.5px]">
+                {formBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
+                Buat subjek AM
+              </button>
+            </form>
+          ) : !selected ? (
+            <div className="flex h-[360px] flex-col items-center justify-center gap-3 text-center">
+              {meta.canCreate ? (
+                <>
+                  <UserPlus className="h-8 w-8 text-slate-300" />
+                  <p className="max-w-[40ch] text-[13px] text-slate-400">
+                    Pilih subjek ante-mortem di daftar untuk mengunggah citranya, atau buat subjek baru.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <UploadCloud className="h-8 w-8 text-slate-300" />
+                  <p className="max-w-[44ch] text-[13px] text-slate-400">
+                    Pilih subjek post-mortem di daftar untuk melihat atau melengkapi citranya. Subjek post-mortem
+                    baru dibuat dari halaman{' '}
+                    <Link to="/identify" className="font-semibold text-teal-700 hover:text-teal-800">
+                      Upload &amp; identify
+                    </Link>
+                    .
+                  </p>
+                </>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl bg-teal-50/60 px-4 py-3">
+                <div className="min-w-0">
+                  <div className="readout">{meta.readout}</div>
+                  <div className="mt-0.5 truncate text-[14px] font-semibold text-ink">
+                    {displayName(selected)}
+                    <span className="ml-2 font-mono text-[11.5px] font-normal text-teal-700">{selected.id.slice(0, 8)}</span>
+                  </div>
+                  {selected.case_reference && <div className="text-[11.5px] text-slate-500">{selected.case_reference}</div>}
+                  {selected.notes && <p className="mt-1 text-[12px] leading-snug text-slate-600">{selected.notes}</p>}
+                </div>
+                <div className="flex flex-col items-end gap-2">
+                  <AngleChips views={upload.filledViews} />
+                  <button
+                    onClick={openDelete}
+                    disabled={upload.busy}
+                    title={upload.busy ? 'Tunggu proses upload/AI selesai' : undefined}
+                    className="btn-ghost h-8 px-2.5 text-[12px] text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Hapus subjek
+                  </button>
+                </div>
+              </div>
+
+              <StoredImagesAi subjectId={selected.id} refreshKey={`${upload.filledViews.join()}|${upload.phase}`} />
+
+              <p className="mt-4 text-[12.5px] leading-snug text-slate-500">{meta.aiHint}</p>
+
+              <DentalUploadPanel upload={upload} allFilledHint="Ketiga sudut subjek ini sudah terisi." />
+
+              {lastResult && (
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-teal-200 bg-teal-50 px-4 py-3">
+                  <div className="flex items-start gap-2.5">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-teal-700" />
+                    <p className="text-[13px] text-teal-900">
+                      Citra sudut <span className="font-semibold">{lastResult.view}</span> tersimpan dan diproses AI:{' '}
+                      {lastResult.count} gigi terdeteksi
+                      {lastResult.avg != null && `, rata-rata confidence ${lastResult.avg.toFixed(1)}%`}.
+                    </p>
+                  </div>
+                  <Link
+                    to={`/analysis?image=${lastResult.imageId}`}
+                    className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-teal-700 hover:text-teal-800"
+                  >
+                    Lihat di Feature analysis
+                    <ArrowUpRight className="h-4 w-4" />
+                  </Link>
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      </div>
+
+      <ConfirmDialog
+        open={confirmOpen && Boolean(selected)}
+        title={`Hapus ${meta.noun}?`}
+        confirmLabel="Hapus subjek"
+        busy={deleting}
+        error={deleteError}
+        onConfirm={confirmDelete}
+        onCancel={closeDelete}
+      >
+        {selected && (
+          <>
+            <p>
+              <span className="font-semibold text-ink">{displayName(selected)}</span>{' '}
+              <span className="font-mono text-[12px] text-slate-500">{selected.id.slice(0, 8)}</span>
+              {selectedImageCount > 0
+                ? ` beserta ${selectedImageCount} citranya akan dihapus dari aplikasi.`
+                : ' akan dihapus dari aplikasi.'}
+            </p>
+            <p className="mt-2 text-[12.5px] text-slate-500">
+              Data tidak dihapus permanen (soft-delete): tetap tersimpan di database dan tercatat di audit log
+              demi chain-of-custody, tetapi tidak lagi tampil atau dapat diubah di aplikasi.
+            </p>
+          </>
+        )}
+      </ConfirmDialog>
+    </div>
+  )
+}

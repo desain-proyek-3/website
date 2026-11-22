@@ -23,7 +23,6 @@ from core.config import settings
 from core.database import async_session_factory, get_db
 from dependencies.auth import AM_ADMIN_ONLY_DETAIL, ensure_can_modify_subject_type, get_current_user, require_role
 from models.dental_image import DentalImage
-from models.embedding import Embedding
 from models.inference_job import InferenceJob
 from models.subject import Subject
 from models.tooth_record import ToothRecord
@@ -39,6 +38,7 @@ from schemas.inference_job import (
 from services.ai_service_client import ai_service_client
 from services.inference_status import ACTIVE_JOB_STATUSES, ai_status_for_images
 from services.storage_service import storage_service
+from services.subject_embedding import EMBEDDING_DIM, is_valid_vector, recompute_subject_embedding
 
 router = APIRouter(prefix="/inference", tags=["Inference"])
 
@@ -89,26 +89,21 @@ async def _poll_and_update_job(job_id: UUID, ai_job_id: str) -> None:
                 job.status = "completed"
                 res_payload = result.get("result") or {}
                 job.result_payload = res_payload
+                # Diisi SEBELUM penghitungan embedding: job ini harus terbaca sebagai
+                # hasil terbaru untuk citranya (urut completed_at).
+                job.updated_at = now
+                job.completed_at = now
 
-                # 1. Simpan subject embedding (512-d vector) jika ada
-                subject_embedding = res_payload.get("subject_embedding")
-                if subject_embedding and isinstance(subject_embedding, list):
-                    stmt_emb = select(Embedding).where(Embedding.subject_id == job.subject_id)
-                    emb_res = await session.execute(stmt_emb)
-                    existing_emb = emb_res.scalar_one_or_none()
-
-                    if existing_emb:
-                        existing_emb.vector = subject_embedding
-                        existing_emb.model_version = "ai_engine_v1"
-                        existing_emb.generated_at = now
-                    else:
-                        new_embedding = Embedding(
-                            subject_id=job.subject_id,
-                            vector=subject_embedding,
-                            model_version="ai_engine_v1",
-                            generated_at=now,
-                        )
-                        session.add(new_embedding)
+                # 1. Embedding subjek = rata-rata embedding terbaru tiap citra aktif
+                #    (AI menghasilkan subject_embedding per citra, lihat services/subject_embedding.py)
+                if not is_valid_vector(res_payload.get("subject_embedding")):
+                    logger.warning(
+                        "[INFERENCE_BG] Job %s: subject_embedding tidak ada / bukan vektor %d-dim — "
+                        "citra ini tidak ikut embedding subjek",
+                        job_id,
+                        EMBEDDING_DIM,
+                    )
+                await recompute_subject_embedding(session, job.subject_id, now)
 
                 # 2. Simpan per-tooth records jika ada
                 detected_teeth = res_payload.get("detected_teeth")
@@ -132,17 +127,16 @@ async def _poll_and_update_job(job_id: UUID, ai_job_id: str) -> None:
                                     fdi_number=fdi_num,
                                     bbox=tooth.get("bbox"),
                                     landmarks=tooth.get("landmarks"),
-                                    morphology_features=tooth.get("morphology") or tooth.get("morphology_features"),
-                                    confidence_score=tooth.get("confidence") or tooth.get("confidence_score"),
+                                    morphology_features=_first_present(tooth, "morphology", "morphology_features"),
+                                    confidence_score=_first_present(tooth, "confidence", "confidence_score"),
                                     created_at=now,
                                 )
                                 session.add(tooth_rec)
             else:
                 job.status = "failed"
-                job.error_message = result.get("error", "Unknown error from AI service")
-
-            job.updated_at = now
-            job.completed_at = now
+                job.error_message = result.get("error") or "Unknown error from AI service"
+                job.updated_at = now
+                job.completed_at = now
 
             await session.commit()
 
@@ -164,6 +158,14 @@ async def _poll_and_update_job(job_id: UUID, ai_job_id: str) -> None:
             print(f"[INFERENCE_BG] Gagal update status failed untuk job {job_id}: {inner_e}")
 
 
+def _first_present(data: dict, *keys: str):
+    """Nilai kunci pertama yang ada & bukan None (beda dengan `or`: 0 / {} tetap dipakai)."""
+    for key in keys:
+        if data.get(key) is not None:
+            return data[key]
+    return None
+
+
 def _new_job(dental_image: DentalImage, user: User) -> InferenceJob:
     """Row inference_jobs baru berstatus pending (belum di-commit)."""
     now = datetime.now(timezone.utc)
@@ -175,6 +177,7 @@ def _new_job(dental_image: DentalImage, user: User) -> InferenceJob:
             "dental_image_id": str(dental_image.id),
             "subject_id": str(dental_image.subject_id),
             "image_path": dental_image.file_path,
+            "view_type": dental_image.view_type,
         },
         retry_count=0,
         created_by=user.id,
@@ -216,18 +219,26 @@ async def _run_job(job_id: UUID) -> None:
                     return  # mis. sudah ditandai failed oleh pemulihan startup
 
                 try:
-                    image_path = (job.request_payload or {}).get("image_path")
-                    if not image_path:
-                        image_path = await session.scalar(
-                            select(DentalImage.file_path).where(DentalImage.id == job.dental_image_id)
+                    # Dibaca dari citra (bukan request_payload): job lama belum menyimpan view_type
+                    image = (
+                        await session.execute(
+                            select(DentalImage.file_path, DentalImage.view_type).where(
+                                DentalImage.id == job.dental_image_id
+                            )
                         )
-                    image_url = storage_service.get_presigned_url(object_name=image_path, expires_seconds=3600)
-                    job.request_payload = {**(job.request_payload or {}), "image_url": image_url}
+                    ).one()
+                    image_url = storage_service.get_presigned_url(object_name=image.file_path, expires_seconds=3600)
+                    job.request_payload = {
+                        **(job.request_payload or {}),
+                        "view_type": image.view_type,
+                        "image_url": image_url,
+                    }
 
                     trigger_result = await ai_service_client.trigger_inference(
                         dental_image_id=job.dental_image_id,
                         subject_id=job.subject_id,
                         image_url=image_url,
+                        view_type=image.view_type,
                     )
                     ai_job_id = trigger_result.get("job_id")
                     job.ai_service_job_id = ai_job_id

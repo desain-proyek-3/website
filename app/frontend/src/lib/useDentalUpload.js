@@ -16,10 +16,9 @@ export const DEFAULT_NO_ACCESS_MSG = 'Akun Anda tidak memiliki akses untuk mengu
 
 /**
  * Upload one image for a subject, trigger inference and poll it to completion.
- * Shared by Identify (post-mortem) and AmRecords (ante-mortem).
+ * Shared by Identify (post-mortem) and SubjectData (ante-/post-mortem).
  *
  * phase: idle | uploading | pending | processing | done | failed | error
- *        | uploaded (stored without AI — uploadOnly(), temporary until the AI service is live)
  *
  * @param {string|null} subjectId  active subject; changing it resets the flow
  * @param {{ onCompleted?: (r: { job: object, imageId: string, view: string, file: File, teeth: object[] }) => void,
@@ -186,16 +185,7 @@ export function useDentalUpload(subjectId, { onCompleted, noAccessMessage = DEFA
     if (res) await runInference(res.image.id, res.view, signal, file)
   }
 
-  /** TEMPORARY: store the image without running AI (AI service not live yet). */
-  const uploadOnly = async () => {
-    if (!file || !subjectId || uploaded) return
-    setErrorMsg('')
-    setPhase('uploading')
-    const res = await uploadSelected(newController())
-    if (res) setPhase('uploaded')
-  }
-
-  // Also used to run AI later on an image stored via uploadOnly().
+  // Re-run AI on the already-stored image after a failed attempt.
   const retryInference = () => {
     if (!uploaded) return
     setErrorMsg('')
@@ -220,7 +210,6 @@ export function useDentalUpload(subjectId, { onCompleted, noAccessMessage = DEFA
     selectFile,
     reset,
     process,
-    uploadOnly,
     retryInference,
     refreshFilledViews,
   }

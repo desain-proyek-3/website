@@ -7,6 +7,8 @@ integration.md
 deploy-webapp.md
 img
 .env
+pekan12.md
+pekan13.md
 
 # Frontend
 app/frontend/.env
@@ -32,3 +34,9 @@ app/backend/middleware/__pycache__/
 app/backend/schemas/__pycache__/
 app/backend/tests/__pycache__/
 
+
+# Deploy
+deploy/.deploy-target
+
+# Output receiver uji ESP32 (scripts/device_receiver.py)
+app/backend/scripts/_device_inbox/

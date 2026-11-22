@@ -14,13 +14,14 @@ live (127.0.0.1:8000) dengan akun examiner sementara:
 Data test di-soft-delete dan akun examiner dinonaktifkan di tearDownClass.
 """
 
+import os
 import json
 import unittest
 import urllib.error
 import urllib.request
 from uuid import uuid4
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = os.environ.get("DENTIFY_TEST_BASE_URL", "http://127.0.0.1:8000")
 DUMMY_JPEG = b"\xFF\xD8\xFF\xE0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xFF\xDB\x00C\x00\xFF\xD9"
 AM_DETAIL = "Data ante-mortem hanya dapat dikelola oleh admin"
 

@@ -2,7 +2,6 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext.jsx'
-import { PoskoProvider } from './context/PoskoContext.jsx'
 import { HistoryProvider } from './context/HistoryContext.jsx'
 import App from './App.jsx'
 import './index.css'
@@ -11,11 +10,9 @@ ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <BrowserRouter>
       <AuthProvider>
-        <PoskoProvider>
-          <HistoryProvider>
-            <App />
-          </HistoryProvider>
-        </PoskoProvider>
+        <HistoryProvider>
+          <App />
+        </HistoryProvider>
       </AuthProvider>
     </BrowserRouter>
   </React.StrictMode>

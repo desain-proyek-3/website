@@ -19,7 +19,6 @@ import { MATCH_TIER_NOTE, VIEW_TYPES, createSubject, runMatching, toCandidate } 
 import { DEFAULT_NO_ACCESS_MSG, useDentalUpload } from '../lib/useDentalUpload.js'
 import { CASE } from '../lib/data.js'
 import { useAuth } from '../context/AuthContext.jsx'
-import { usePosko } from '../context/PoskoContext.jsx'
 import { useHistory } from '../context/HistoryContext.jsx'
 
 // Backend roles allowed to create post-mortem subjects, upload and trigger inference.
@@ -39,7 +38,6 @@ const inputCls =
 
 export default function Identify() {
   const { user } = useAuth()
-  const { posko } = usePosko()
   const { history, addHistoryItem, clearHistory } = useHistory()
   const canWrite = WRITE_ROLES.includes(user?.role)
 
@@ -80,7 +78,7 @@ export default function Identify() {
     setMatching({ state: 'idle', candidates: [], message: '' })
   }, [subject?.id])
 
-  // ── Upload + inference (shared with AmRecords) ──
+  // ── Upload + inference (shared with SubjectData) ──
   const upload = useDentalUpload(subject?.id ?? null, {
     onCompleted: async ({ job, imageId, view, file, teeth }) => {
       const confs = teeth.map((t) => t.confidence).filter((c) => c != null)
@@ -113,7 +111,6 @@ export default function Identify() {
         timestamp: new Date().toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }),
         fileName: file.name,
         fileSize: (file.size / (1024 * 1024)).toFixed(2) + ' MB',
-        posko: posko,
         operator: `${user?.full_name || user?.username} (${user?.role})`,
         result: { ...data, candidates },
       })
@@ -249,23 +246,10 @@ export default function Identify() {
                 </button>
               </div>
 
-              {/* allowSkipAi: TEMPORARY until the AI service is live — remove afterwards */}
               <DentalUploadPanel
                 upload={upload}
                 allFilledHint="Ketiga sudut subjek ini sudah terisi. Buat subjek baru untuk mengunggah citra lain."
-                allowSkipAi
               />
-
-              {upload.phase === 'uploaded' && upload.uploaded && (
-                <div className="mt-5 flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-                  <p className="text-[13px] text-amber-900">
-                    Citra sudut <span className="font-semibold">{upload.uploaded.view}</span> tersimpan{' '}
-                    <span className="font-semibold">tanpa pemrosesan AI</span> — belum ada deteksi gigi maupun
-                    embedding. Pencarian kandidat AM baru bisa dilakukan setelah subjek memiliki embedding.
-                  </p>
-                </div>
-              )}
             </>
           )}
         </section>
@@ -463,7 +447,7 @@ export default function Identify() {
             <div>
               <h2 className="text-[17px] font-semibold text-ink">Riwayat Analisis Upload</h2>
               <p className="mt-0.5 text-[13px] text-slate-500">
-                Daftar seluruh gambar yang di-upload dan dianalisis oleh model AI di {posko}
+                Daftar seluruh gambar yang di-upload dan dianalisis oleh model AI
               </p>
             </div>
           </div>
@@ -492,7 +476,7 @@ export default function Identify() {
             <table className="w-full min-w-[760px] text-left">
               <thead>
                 <tr className="border-b border-slate-100 bg-slate-50/70">
-                  {['ID Analisis', 'Waktu', 'File / Posko', 'Kandidat Utama', 'Confidence', 'Kualitas', 'Status'].map((h) => (
+                  {['ID Analisis', 'Waktu', 'File', 'Kandidat Utama', 'Confidence', 'Kualitas', 'Status'].map((h) => (
                     <th key={h} className="px-4 py-3 font-mono text-[10.5px] font-medium tracking-[.12em] text-slate-500">
                       {h.toUpperCase()}
                     </th>
@@ -514,7 +498,7 @@ export default function Identify() {
                       </td>
                       <td className="px-4 py-3.5">
                         <div className="text-[13px] font-medium text-ink">{item.fileName}</div>
-                        <div className="text-[11.5px] text-slate-400">{item.posko} · {item.fileSize}</div>
+                        <div className="text-[11.5px] text-slate-400">{item.fileSize}</div>
                       </td>
                       <td className="px-4 py-3.5">
                         {topMatch ? (

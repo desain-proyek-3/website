@@ -1,13 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity,
   Bell,
-  CheckCircle2,
-  ChevronRight,
-  Database,
   Clock,
-  Edit3,
+  Database,
   LayoutGrid,
   LogOut,
   Menu,
@@ -15,30 +12,60 @@ import {
   ShieldCheck,
   UploadCloud,
   Users,
-  Waves,
-  X,
 } from 'lucide-react'
 import Logo from './Logo.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 import { initialsOf, roleLabel } from '../lib/auth.js'
-import { usePosko } from '../context/PoskoContext.jsx'
-import { CASE } from '../lib/data.js'
+import { getStatsSummary } from '../lib/api.js'
 
+const fmtCount = (n) => (n == null ? '–' : n.toLocaleString('id-ID'))
+
+// `meta` = small label next to each link; a function receives live counts (see useNavCounts).
 const NAV = [
+  { to: '/dashboard', label: 'Dashboard', icon: LayoutGrid, meta: (c) => `${fmtCount(c.pairs)} pairs` },
   { to: '/identify', label: 'Upload & identify', icon: UploadCloud, meta: 'new scan' },
-  { to: '/dashboard', label: 'Match dashboard', icon: LayoutGrid, meta: '128 pairs' },
-  { to: '/review', label: 'Forensic review', icon: ShieldCheck, meta: '14 waiting' },
+  { to: '/review', label: 'Forensic review', icon: ShieldCheck, meta: (c) => `${fmtCount(c.waiting)} waiting` },
   { to: '/analysis', label: 'Feature analysis', icon: Activity, meta: 'live' },
-  { to: '/am-records', label: 'Data ante-mortem', icon: Database, meta: 'admin', roles: ['admin'] },
+  { to: '/subjects', label: 'Subject Data', icon: Database, meta: 'admin', roles: ['admin'] },
   { to: '/users', label: 'Manajemen user', icon: Users, meta: 'admin', roles: ['admin'] },
 ]
 
+const COUNTS_REFRESH_MS = 60_000
+
+/**
+ * Matching-result counts for the sidebar labels (same source as the Dashboard):
+ * pairs = pending + confirmed + rejected, waiting = pending review.
+ * Refreshed on every page change and every minute; null while unknown / on error.
+ */
+function useNavCounts(pathname) {
+  const [counts, setCounts] = useState({ pairs: null, waiting: null })
+
+  useEffect(() => {
+    let cancelled = false
+    const refresh = () =>
+      getStatsSummary()
+        .then(({ matching_results: m }) => {
+          if (cancelled) return
+          setCounts({ pairs: m.pending_review + m.confirmed + m.rejected, waiting: m.pending_review })
+        })
+        .catch(() => !cancelled && setCounts({ pairs: null, waiting: null }))
+    refresh()
+    const t = setInterval(refresh, COUNTS_REFRESH_MS)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [pathname])
+
+  return counts
+}
+
 const TITLES = {
   '/identify': { h: 'Upload & identify', s: 'Kirim gambar dental post-mortem ke layanan identifikasi AI' },
-  '/dashboard': { h: 'Match dashboard', s: 'Rekam ante-mortem dan post-mortem yang dipasangkan oleh engine' },
+  '/dashboard': { h: 'Dashboard', s: 'Rekam ante-mortem dan post-mortem yang dipasangkan oleh engine' },
   '/review': { h: 'Forensic review', s: 'Hasil cocok yang memerlukan konfirmasi anggota tim' },
   '/analysis': { h: 'Feature extraction', s: 'Pengukuran tingkat gigi dari radiograf post-mortem' },
-  '/am-records': { h: 'Data ante-mortem', s: 'Input data gigi semasa hidup sebagai pembanding pencocokan' },
+  '/subjects': { h: 'Subject Data', s: 'Kelola subjek ante-mortem dan post-mortem beserta citra gigi dan status AI-nya' },
   '/users': { h: 'Manajemen user', s: 'Kelola akun petugas, role, dan status aktif' },
 }
 
@@ -69,29 +96,16 @@ const INITIAL_NOTIFICATIONS = [
   },
 ]
 
-function SidebarBody({ user, posko }) {
+function SidebarBody({ user, counts }) {
   return (
     <div className="flex h-full flex-col bg-white text-slate-700">
-      {/* Top Header Logo in Sidebar */}
-      <div className="px-5 pb-5 pt-5 border-b border-slate-100 flex items-center justify-between">
+      {/* Logo — same height as the header's top row */}
+      <div className="flex h-[69px] shrink-0 items-center border-b border-slate-100 px-5">
         <Logo className="h-10 w-auto" to="/" />
       </div>
 
-      {/* Active Posko Box inside Sidebar */}
-      <div className="m-4 rounded-xl border border-teal-200/80 bg-teal-50/60 p-4">
-        <div className="readout text-teal-800 font-bold">POSKO / SEKTOR AKTIF</div>
-        <div className="mt-1 font-sans text-[14px] font-bold text-teal-900">{posko}</div>
-        <div className="mt-2 font-mono text-[11.5px] text-slate-500">{CASE.id}</div>
-        <div className="mt-3 flex items-center gap-2 border-t border-teal-200/60 pt-2.5 text-[12px]">
-          <span className="h-2 w-2 rounded-full bg-teal-600 animate-pulseDot" />
-          <span className="text-slate-600 font-medium">
-            {CASE.pmRecords} PM · {CASE.amRecords} AM records
-          </span>
-        </div>
-      </div>
-
       {/* Navigation Links */}
-      <nav className="flex-1 space-y-1 px-3 py-2">
+      <nav className="flex-1 space-y-1 px-3 py-4">
         {NAV.filter((n) => !n.roles || n.roles.includes(user?.role)).map(({ to, label, icon: Icon, meta }) => (
           <NavLink
             key={to}
@@ -114,7 +128,7 @@ function SidebarBody({ user, posko }) {
                     isActive ? 'bg-teal-800 text-teal-100' : 'bg-slate-100 text-slate-500 group-hover:bg-slate-200'
                   }`}
                 >
-                  {meta}
+                  {typeof meta === 'function' ? meta(counts) : meta}
                 </span>
               </>
             )}
@@ -129,12 +143,11 @@ export default function AppShell() {
   const [open, setOpen] = useState(true) // Collapsible sidebar state (no backdrop overlay)
   const [showNotifications, setShowNotifications] = useState(false)
   const [notifications, setNotifications] = useState(INITIAL_NOTIFICATIONS)
-  const [isEditingPosko, setIsEditingPosko] = useState(false)
 
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const { user, logout } = useAuth()
-  const { posko, setPosko, PRESET_POSKOS } = usePosko()
+  const counts = useNavCounts(pathname)
 
   const title =
     TITLES[pathname] ??
@@ -153,12 +166,20 @@ export default function AppShell() {
   }
 
   return (
-    <div className="min-h-screen bg-canvas flex flex-col">
+    <div className="flex min-h-screen bg-canvas">
+      {/* Sidebar — full viewport height from the very top; the header sits to its right */}
+      {open && (
+        <aside className="sticky top-0 z-30 h-screen w-[272px] shrink-0 overflow-y-auto border-r border-slate-200 bg-white shadow-sm scroll-slim print:hidden">
+          <SidebarBody user={user} counts={counts} />
+        </aside>
+      )}
+
+      <div className="flex min-w-0 flex-1 flex-col">
       {/* Top Sticky Header */}
       <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur shadow-sm print:hidden">
         {/* Top Bar Row */}
         <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
-          {/* Left: Menu Toggle & Search Bar */}
+          {/* Left: Menu Toggle, Logo (when the sidebar is closed) & Search Bar */}
           <div className="flex items-center gap-3 min-w-0 flex-1">
             <button
               onClick={() => setOpen((v) => !v)}
@@ -172,6 +193,8 @@ export default function AppShell() {
               <Menu className="h-5 w-5 text-teal-700" />
               <span>Menu</span>
             </button>
+
+            {!open && <Logo className="h-9 w-auto shrink-0" to="/" />}
 
             <label className="relative flex min-w-0 max-w-[420px] flex-1 items-center">
               <Search className="pointer-events-none absolute left-3.5 h-[18px] w-[18px] text-slate-400" />
@@ -188,12 +211,6 @@ export default function AppShell() {
 
           {/* Right: Notifications & User Profile */}
           <div className="flex items-center gap-3 shrink-0">
-            {/* Active Case Pill */}
-            <div className="hidden lg:flex h-11 items-center gap-2 rounded-xl border border-teal-200 bg-teal-50/80 px-3.5 text-teal-800">
-              <Waves className="h-4 w-4 text-teal-600" />
-              <span className="font-mono text-[12px] font-semibold">{CASE.id}</span>
-            </div>
-
             {/* Interactive Notifications Popover */}
             <div className="relative">
               <button
@@ -284,83 +301,17 @@ export default function AppShell() {
           </div>
         </div>
 
-        {/* Bottom Bar Row (Page Title & Posko Selector) */}
-        <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3 px-4 pb-4 pt-1 sm:px-6 lg:px-8 border-t border-slate-100">
-          <div>
-            <h1 className="text-[22px] font-bold tracking-tight text-ink sm:text-[25px]">{title.h}</h1>
-            <p className="mt-0.5 max-w-[62ch] text-[13px] text-slate-500">{title.s}</p>
-          </div>
-
-          {/* Posko / Sektor Selector */}
-          <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
-            <span className="text-[12px] font-bold text-slate-500 pl-1">POSKO / SEKTOR:</span>
-            
-            {!isEditingPosko ? (
-              <div className="flex items-center gap-2">
-                <select
-                  value={PRESET_POSKOS.includes(posko) ? posko : 'custom'}
-                  onChange={(e) => {
-                    if (e.target.value === 'custom') {
-                      setIsEditingPosko(true)
-                    } else {
-                      setPosko(e.target.value)
-                    }
-                  }}
-                  className="h-8 rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-[12.5px] font-bold text-teal-800 focus:outline-none focus:ring-2 focus:ring-teal-500"
-                >
-                  {PRESET_POSKOS.map((p) => (
-                    <option key={p} value={p}>{p}</option>
-                  ))}
-                  <option value="custom">✏️ Custom / Manual Input...</option>
-                </select>
-                <button
-                  onClick={() => setIsEditingPosko(true)}
-                  className="p-1 text-slate-400 hover:text-teal-700"
-                  title="Edit Posko Manual"
-                >
-                  <Edit3 className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5">
-                <input
-                  type="text"
-                  value={posko}
-                  onChange={(e) => setPosko(e.target.value)}
-                  placeholder="Nama Posko/Sektor..."
-                  autoFocus
-                  className="h-8 rounded-lg border border-teal-500 bg-white px-2.5 text-[12.5px] font-semibold text-ink focus:outline-none"
-                />
-                <button
-                  onClick={() => setIsEditingPosko(false)}
-                  className="btn-primary h-8 px-2.5 text-[12px]"
-                >
-                  Simpan
-                </button>
-              </div>
-            )}
-
-            <nav aria-label="Breadcrumb" className="readout flex items-center gap-1 border-l border-slate-200 pl-2">
-              <ChevronRight className="h-3 w-3 text-slate-400" />
-              <span className="text-teal-700 font-semibold">{title.h.toUpperCase()}</span>
-            </nav>
-          </div>
+        {/* Bottom Bar Row (Page Title) */}
+        <div className="border-t border-slate-100 px-4 pb-4 pt-1 sm:px-6 lg:px-8">
+          <h1 className="text-[22px] font-bold tracking-tight text-ink sm:text-[25px]">{title.h}</h1>
+          <p className="mt-0.5 max-w-[62ch] text-[13px] text-slate-500">{title.s}</p>
         </div>
       </header>
 
-      {/* Main Container Layout */}
-      <div className="flex flex-1 min-w-0">
-        {/* Pure White Collapsible Sidebar (No backdrop mask, no page freeze!) */}
-        {open && (
-          <aside className="w-[272px] shrink-0 border-r border-slate-200 bg-white shadow-sm transition-all duration-200 print:hidden">
-            <SidebarBody user={user} posko={posko} />
-          </aside>
-        )}
-
-        {/* Main Content Area (Fully interactive, clickable & scrollable) */}
-        <main className="flex-1 min-w-0 px-4 pb-14 pt-6 sm:px-6 lg:px-8 print:p-0">
-          <Outlet />
-        </main>
+      {/* Main Content Area */}
+      <main className="flex-1 min-w-0 px-4 pb-14 pt-6 sm:px-6 lg:px-8 print:p-0">
+        <Outlet />
+      </main>
       </div>
     </div>
   )

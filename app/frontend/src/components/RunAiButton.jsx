@@ -11,7 +11,7 @@ import {
 
 /**
  * Run (or re-run) the AI on one already-stored image and poll it to the end.
- * For old images — migrated dataset or "Upload tanpa AI" — that never got
+ * For old images — migrated dataset or failed runs — that never got
  * tooth records / an embedding. Hidden when the user may not trigger it.
  *
  * @param {{ image: { id: string, ai_status?: string, latest_job_id?: string, ai_error_message?: string },

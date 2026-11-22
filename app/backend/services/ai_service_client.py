@@ -2,9 +2,23 @@
 Dentify Services — AI Service Client
 HTTP client untuk komunikasi dengan AI microservice terpisah.
 
-⚠️ SEMUA asumsi format request/response AI service TERISOLASI di file ini.
-   Kontrak HTTP AI service BELUM final dikonfirmasi ulang ke Bonifasius (lihat be-handover.md 5.6.1).
-   Jika format berubah, HANYA file ini yang perlu dimodifikasi — tidak menyentuh model/schema/router.
+⚠️ Format request/response AI service TERISOLASI di file ini (+ pembacaan `result` di
+   api/v1/inference.py dan services/subject_embedding.py).
+
+Kontrak "Dentify AI Engine Service" v1.0.0 (diverifikasi live 16 Nov 2026, skema di {base}/openapi.json):
+    POST {base}/api/v1/inference   header X-API-Key
+         body {dental_image_id, subject_id, image_url (presigned MinIO), view_type: frontal|left|right}
+         → 202 {job_id, status}
+    GET  {base}/api/v1/inference/{job_id}/status
+         → {job_id, status: pending|processing|completed|failed, dental_image_id, subject_id,
+            result | null, error | null, created_at, updated_at}
+    result = {scan_id, view_type, image_path, qc_result{blur_score, is_blurry, mean_brightness,
+              is_underexposed, is_overexposed, passed_qc}, missing_teeth[fdi],
+              subject_embedding[512, L2-normalized, PER CITRA], subject_embedding_model,
+              detected_teeth[{fdi_id (str), confidence 0..1, bbox [x, y, w, h] piksel,
+                              landmarks {nama: [x, y]}, morphology {fitur: 0|1},
+                              embedding[512], conditions[]}]}
+    GET  {base}/health (tanpa key) → {status, checkpoint_loaded, device}
 """
 
 import asyncio
@@ -15,6 +29,9 @@ from uuid import UUID
 import httpx
 
 from core.config import settings
+
+# dental_images.view_type (DB) → view_type AI service
+VIEW_TYPE_TO_AI = {"depan": "frontal", "kiri": "left", "kanan": "right"}
 
 
 class AIServiceClient:
@@ -42,21 +59,27 @@ class AIServiceClient:
         dental_image_id: UUID,
         subject_id: UUID,
         image_url: str,
+        view_type: str,
     ) -> dict[str, Any]:
         """
         Kirim request ke AI service untuk memulai inferensi pada sebuah citra dental.
+        `view_type` memakai nilai DB (depan/kiri/kanan) — dipetakan di sini.
 
         Returns:
             dict berisi {"job_id": "<ai_service_job_id>", "status": "processing"}
 
         Raises:
+            ValueError: view_type tidak dikenal
             httpx.HTTPStatusError: jika AI service return non-2xx
             httpx.ConnectError: jika AI service tidak reachable
         """
+        if view_type not in VIEW_TYPE_TO_AI:
+            raise ValueError(f"view_type tidak dikenal: {view_type!r}")
         request_payload = {
             "dental_image_id": str(dental_image_id),
             "subject_id": str(subject_id),
             "image_url": image_url,
+            "view_type": VIEW_TYPE_TO_AI[view_type],
         }
 
         async with httpx.AsyncClient(timeout=self.timeout, headers=self.headers) as client:

@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, CircleDot, Loader2, RotateCcw, Sparkles, Upload } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, CircleDot, Loader2, RotateCcw, Sparkles } from 'lucide-react'
 import Dropzone from './Dropzone.jsx'
 import { VIEW_TYPES } from '../lib/api.js'
 
@@ -12,13 +12,10 @@ const STEPS = [
  * Angle picker + dropzone + process/retry/reset buttons + AI stepper + error box.
  * Driven entirely by a `useDentalUpload()` result passed as `upload`.
  *
- * `allowSkipAi` adds a TEMPORARY "Upload tanpa AI" button (stores the image only)
- * — remove once the AI service is live.
- *
  * @param {{ upload: ReturnType<typeof import('../lib/useDentalUpload.js').useDentalUpload>,
- *           allFilledHint?: string, allowSkipAi?: boolean }} props
+ *           allFilledHint?: string }} props
  */
-export default function DentalUploadPanel({ upload: u, allFilledHint, allowSkipAi = false }) {
+export default function DentalUploadPanel({ upload: u, allFilledHint }) {
   const stepIndex = STEPS.findIndex((s) => s.key === u.phase)
   const cannotUpload = !u.file || u.busy || u.uploaded || u.allViewsFilled || u.filledViews.includes(u.viewType)
 
@@ -80,30 +77,13 @@ export default function DentalUploadPanel({ upload: u, allFilledHint, allowSkipA
             </>
           )}
         </button>
-        {allowSkipAi && (
-          <button
-            onClick={u.uploadOnly}
-            disabled={cannotUpload}
-            title="Sementara: simpan citra tanpa menjalankan model AI (layanan AI belum terhubung)"
-            className="btn-ghost h-11 px-5 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Upload className="h-4 w-4" />
-            Upload tanpa AI
-          </button>
-        )}
         {u.uploaded && (u.phase === 'failed' || u.phase === 'error') && (
           <button onClick={u.retryInference} className="btn-ghost h-11 px-5">
             <RotateCcw className="h-4 w-4" />
             Coba lagi proses AI
           </button>
         )}
-        {u.uploaded && u.phase === 'uploaded' && (
-          <button onClick={u.retryInference} className="btn-ghost h-11 px-5">
-            <Sparkles className="h-4 w-4" />
-            Jalankan AI untuk citra ini
-          </button>
-        )}
-        {(u.file || u.phase === 'done' || u.phase === 'uploaded') && !u.busy && (
+        {(u.file || u.phase === 'done') && !u.busy && (
           <button onClick={u.reset} className="btn-ghost h-11 px-5">
             <RotateCcw className="h-4 w-4" />
             Reset Form

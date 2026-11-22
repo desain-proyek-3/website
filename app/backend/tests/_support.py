@@ -5,6 +5,7 @@ Server FastAPI harus jalan di 127.0.0.1:8000 dengan DB/MinIO Docker lokal.
 
 import asyncio
 import json
+import os
 import struct
 import sys
 import time
@@ -21,8 +22,8 @@ if str(BACKEND_DIR) not in sys.path:
 import models  # noqa: E402,F401 — registrasi seluruh relasi ORM
 from core.database import async_session_factory, engine  # noqa: E402
 
-BASE_URL = "http://127.0.0.1:8000"
-MOCK_AI_URL = "http://127.0.0.1:8100"
+BASE_URL = os.environ.get("DENTIFY_TEST_BASE_URL", "http://127.0.0.1:8000")
+MOCK_AI_URL = os.environ.get("DENTIFY_TEST_MOCK_AI_URL", "http://127.0.0.1:8100")
 
 
 def make_request(path, method="GET", data=None, content_type="application/json", token=None, base=BASE_URL):

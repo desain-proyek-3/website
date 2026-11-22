@@ -21,7 +21,7 @@ async function fetchAll(subjectType) {
 
 /**
  * Dashboard card: images that never completed AI processing (migrated dataset,
- * "Upload tanpa AI", failed runs) + "process all" per subject type. The backend
+ * failed runs) + "process all" per subject type. The backend
  * queues them and runs a few at a time (AI_SERVICE_MAX_CONCURRENT_JOBS).
  * Admin: PM + AM; examiner: PM only (AM inference is admin-only); viewer: read-only.
  *
@@ -96,8 +96,8 @@ export default function UnprocessedImagesCard({ role, onQueued }) {
             <h2 className="text-[17px] font-semibold text-ink">Citra belum diproses AI</h2>
           </div>
           <p className="mt-1 max-w-[80ch] text-[13px] text-slate-500">
-            Citra tanpa hasil deteksi gigi &amp; embedding (dataset hasil migrasi, "Upload tanpa AI", atau proses
-            yang gagal) belum bisa dicocokkan. Proses massal dijalankan bergiliran di server.
+            Citra tanpa hasil deteksi gigi &amp; embedding (dataset hasil migrasi atau proses yang gagal) belum
+            bisa dicocokkan. Proses massal dijalankan bergiliran di server.
           </p>
         </div>
         <button onClick={load} className="btn-ghost h-8 px-3 text-[12px]" aria-label="Muat ulang">

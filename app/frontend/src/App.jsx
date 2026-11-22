@@ -8,7 +8,7 @@ import Report from './pages/Report.jsx'
 import Analysis from './pages/Analysis.jsx'
 import Identify from './pages/Identify.jsx'
 import Users from './pages/Users.jsx'
-import AmRecords from './pages/AmRecords.jsx'
+import SubjectData from './pages/SubjectData.jsx'
 
 export default function App() {
   return (
@@ -32,13 +32,15 @@ export default function App() {
         <Route path="/review/report/:id" element={<Report />} />
         <Route path="/analysis" element={<Analysis />} />
         <Route
-          path="/am-records"
+          path="/subjects"
           element={
             <ProtectedRoute roles={['admin']}>
-              <AmRecords />
+              <SubjectData />
             </ProtectedRoute>
           }
         />
+        {/* Old URL of the page (ante-mortem only) — keep bookmarks working */}
+        <Route path="/am-records" element={<Navigate to="/subjects?type=am" replace />} />
         <Route
           path="/users"
           element={
