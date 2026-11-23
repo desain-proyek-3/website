@@ -57,7 +57,7 @@ class InferenceBatchRequest(BaseModel):
 
 class InferenceBatchSkipped(BaseModel):
     dental_image_id: UUID
-    reason: Literal["not_found", "forbidden", "already_running", "already_processed"]
+    reason: Literal["not_found", "forbidden", "already_running", "already_processed", "reanalysis_pending"]
     detail: str
 
 
@@ -72,3 +72,55 @@ class InferenceJobListResponse(BaseModel):
     """Respons daftar inference jobs."""
     items: list[InferenceJobResponse]
     total: int
+
+
+# ── Analisis ulang (Pekan 13) ─────────────────────────────────────────────
+
+class ReanalysisTooth(BaseModel):
+    """Satu baris gigi — bentuknya sama dengan tooth_records yang akan/telah disimpan."""
+    fdi_number: int
+    bbox: Any | None = None
+    landmarks: Any | None = None
+    morphology_features: Any | None = None
+    confidence_score: float | None = None
+
+
+class ReanalysisSummary(BaseModel):
+    current_count: int = Field(..., description="Jumlah baris gigi hasil yang berlaku saat ini")
+    proposed_count: int = Field(..., description="Jumlah baris gigi hasil analisis ulang")
+    added: list[int] = Field(default_factory=list, description="FDI yang hanya ada di hasil baru")
+    removed: list[int] = Field(default_factory=list, description="FDI yang hilang di hasil baru")
+    kept: list[int] = Field(default_factory=list, description="FDI yang ada di keduanya")
+
+
+class ReanalysisComparisonResponse(BaseModel):
+    """Perbandingan hasil saat ini vs hasil analisis ulang (sebelum Confirm/Reject)."""
+    job_id: UUID
+    dental_image_id: UUID
+    subject_id: UUID
+    subject_type: Literal["ante_mortem", "post_mortem"]
+    status: InferenceJobStatus
+    review: Literal["pending", "confirmed", "rejected"]
+    error_message: str | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
+    current: list[ReanalysisTooth]
+    proposed: list[ReanalysisTooth]
+    summary: ReanalysisSummary
+    confirmed_matches: int = Field(
+        ..., description="Jumlah pasangan PM-AM berstatus confirmed yang melibatkan subjek ini (untuk peringatan)"
+    )
+
+
+class ReanalysisDecisionRequest(BaseModel):
+    decision: Literal["confirm", "reject"] = Field(
+        ..., description="confirm = terapkan hasil baru (menimpa hasil lama); reject = pertahankan hasil lama"
+    )
+
+
+class ReanalysisDecisionResponse(BaseModel):
+    job_id: UUID
+    dental_image_id: UUID
+    review: Literal["confirmed", "rejected"]
+    decided_at: datetime
+    tooth_count: int = Field(..., description="Jumlah baris gigi yang berlaku setelah keputusan")

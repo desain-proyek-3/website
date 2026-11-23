@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.dental_image import DentalImage
 from models.embedding import Embedding
 from models.inference_job import InferenceJob
+from services.inference_status import applied_job_condition
 
 EMBEDDING_DIM = 512
 MODEL_VERSION_MAX_LEN = 50  # embeddings.model_version VARCHAR(50)
@@ -81,6 +82,7 @@ async def recompute_subject_embedding(session: AsyncSession, subject_id: UUID, n
             DentalImage.subject_id == subject_id,
             DentalImage.is_deleted == False,  # noqa: E712
             InferenceJob.status == "completed",
+            applied_job_condition(),  # hasil analisis ulang yang belum dikonfirmasi tidak dipakai
             InferenceJob.result_payload["subject_embedding"].isnot(None),
         )
         .distinct(InferenceJob.dental_image_id)

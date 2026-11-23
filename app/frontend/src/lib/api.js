@@ -416,6 +416,28 @@ export async function runImageInference(imageId, { signal, onUpdate } = {}) {
   return pollInferenceJob(job.id, { signal, onUpdate })
 }
 
+// ── Analisis ulang (hasil ditahan sampai Confirm/Reject) ────────────────
+
+/** Jalankan ulang AI untuk citra yang sudah diproses; 409 bila sedang berjalan / ada hasil menunggu keputusan. */
+export function startReanalysis(dentalImageId, { signal } = {}) {
+  return apiFetch('/api/v1/inference/reanalyze', { method: 'POST', json: { dental_image_id: dentalImageId }, signal })
+}
+
+/**
+ * Hasil saat ini vs hasil analisis ulang.
+ * @returns {Promise<{ job_id: string, subject_type: string, review: 'pending'|'confirmed'|'rejected',
+ *   current: object[], proposed: object[], confirmed_matches: number,
+ *   summary: { current_count: number, proposed_count: number, added: number[], removed: number[], kept: number[] } }>}
+ */
+export function getReanalysis(jobId, { signal } = {}) {
+  return apiFetch(`/api/v1/inference/jobs/${jobId}/reanalysis`, { signal })
+}
+
+/** decision: 'confirm' (hasil baru menimpa hasil lama) | 'reject' (pertahankan hasil lama / tutup yang gagal). */
+export function decideReanalysis(jobId, decision) {
+  return apiFetch(`/api/v1/inference/jobs/${jobId}/reanalysis/decision`, { method: 'POST', json: { decision } })
+}
+
 /**
  * Active images that never completed AI processing (none / running / failed).
  * @returns {Promise<{ items: object[], total: number, counts: { ante_mortem: number, post_mortem: number },

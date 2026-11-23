@@ -25,7 +25,7 @@ Dalam konteks forensik dan DVI, keabsahan data (*chain-of-custody*) adalah prior
 - **Audit Logging:** Structured JSON logging (`python-json-logger`) yang diperkuat mekanisme kriptografis *hash-chaining* (SHA-256) dengan proteksi konkurensi PostgreSQL advisory lock.
 - **Integrasi AI:** HTTP client asinkron `httpx` untuk berkomunikasi dengan AI microservice terpisah (pola *trigger* + *polling*).
 - **ASGI Server:** Uvicorn.
-- **Containerization:** Docker & Docker Compose untuk orkestrasi *service* pendukung (PostgreSQL, ChromaDB, MinIO).
+- **Containerization:** Docker & Docker Compose untuk orkestrasi *service* pendukung (PostgreSQL, ChromaDB, MinIO) saat pengembangan lokal. Di server, **backend** berjalan sebagai container (`app/backend/Dockerfile` + `deploy/docker-compose.prod.yml`), sedangkan PostgreSQL, MinIO, ChromaDB, nginx, dan frontend statis berjalan native.
 
 ---
 
@@ -35,7 +35,9 @@ Seluruh kode sumber backend berada di dalam direktori `app/backend/`. Berkas ske
 
 ```
 website/
-├── docker-compose.yml          # Orkestrasi PostgreSQL + ChromaDB + MinIO
+├── docker-compose.yml          # Orkestrasi PostgreSQL + ChromaDB + MinIO (dev lokal)
+├── deploy/
+│   └── docker-compose.prod.yml # Compose produksi: container backend di server (network_mode: host)
 ├── schema_phase1.sql           # 6 tabel inti DVI + ekstensi vector (dijalankan otomatis oleh Docker)
 ├── schema_phase2_audit.sql     # Tabel audit_logs (hash-chain)
 ├── schema_phase3a.sql          # Kolom soft-delete subjects & dental_images
@@ -459,13 +461,14 @@ python -m unittest tests/test_users.py
 | Route | Halaman | Akses | Status |
 |---|---|---|---|
 | `/login` | Login | Publik | Terintegrasi (JWT) |
-| `/dashboard` | Dashboard | Semua role | Masih data statis — menunggu endpoint matching |
-| `/identify` | Input data post-mortem (subjek → upload → inferensi AI) | Semua role (upload: admin & examiner) | Terintegrasi; panel kandidat AM masih simulasi |
-| `/analysis` | Hasil deteksi per gigi (citra + overlay bbox FDI) | Semua role | Terintegrasi sebagian |
-| `/review` | Review hasil pencocokan | Semua role | Belum terintegrasi — menunggu endpoint matching |
-| `/am-records` | Input data ante-mortem | `admin` | Terintegrasi |
+| `/dashboard` | Dashboard (statistik, progres pencocokan, triase kandidat, perbandingan AM vs PM) | Semua role | Terintegrasi |
+| `/identify` | Input data post-mortem (subjek → upload → inferensi AI → kandidat AM) | Semua role (upload: admin & examiner) | Terintegrasi |
+| `/analysis` | Hasil deteksi per gigi (citra + overlay bbox FDI) & perbandingan morfologi PM vs AM | Semua role | Terintegrasi |
+| `/review` | Review hasil pencocokan (konfirmasi/tolak) | Semua role (keputusan: admin & examiner) | Terintegrasi |
+| `/review/report/:id` | Laporan identifikasi format INTERPOL DVI | Semua role (pasangan `confirmed`) | Terintegrasi (narasi Agentic RAG belum) |
+| `/subjects` | Subject Data — kelola subjek ante-mortem & post-mortem (`/am-records` dialihkan ke sini) | `admin` | Terintegrasi |
 | `/users` | Manajemen user | `admin` | Terintegrasi |
 
-Bagian UI yang masih memakai data simulasi ditandai badge **"DATA SIMULASI"**.
+Search bar di header mencari subjek (nama, referensi kasus, atau awalan ID) lewat `GET /api/v1/subjects?q=` dan membuka hasilnya di halaman Analysis. Komponen `SimBadge` (**"DATA SIMULASI"**) masih tersedia, tetapi saat ini tidak ada lagi bagian halaman yang memakai data simulasi.
 
 > **Catatan:** Berkas di root `app/frontend/` (`api.js`, `Dropzone.jsx`, `Identify.jsx`, `Landing.jsx`) adalah salinan lama yang **tidak dipakai**. Kode aktif berada di `app/frontend/src/`.

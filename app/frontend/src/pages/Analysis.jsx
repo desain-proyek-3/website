@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   Activity,
@@ -10,13 +10,17 @@ import {
   ImageOff,
   Loader2,
   Maximize2,
+  RotateCcw,
   UploadCloud,
+  X,
 } from 'lucide-react'
 import {
   AI_STATUS_LABEL,
   ApiError,
+  PollTimeoutError,
   VIEW_TYPES,
   bboxToPixels,
+  decideReanalysis,
   getDentalImage,
   getMatchingComparison,
   getMatchingResult,
@@ -26,9 +30,13 @@ import {
   listMatchingResults,
   listSubjectImages,
   listSubjects,
+  pollInferenceJob,
   runMatching,
+  startReanalysis,
 } from '../lib/api.js'
+import ReanalysisDialog from '../components/ReanalysisDialog.jsx'
 import RunAiButton from '../components/RunAiButton.jsx'
+import ToothOverlay from '../components/ToothOverlay.jsx'
 import ToothComparisonTable from '../components/ToothComparisonTable.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 
@@ -128,7 +136,7 @@ function MorphologyComparison({ subject, selectedId, onSelect, reloadKey, canRun
   ]
 
   return (
-    <section className="card p-6">
+    <section id="perbandingan-morfologi" className="card scroll-mt-28 p-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
@@ -401,7 +409,93 @@ export default function Analysis() {
   const canRunAi =
     !!subject && (user?.role === 'admin' || (user?.role === 'examiner' && subject.subject_type === 'post_mortem'))
   const refreshAfterAi = () => setReloadKey((k) => k + 1)
-  const strokeW = natural ? Math.max(natural.w, natural.h) / 400 : 1
+
+  // ── Analisis ulang: hasil baru ditahan sampai Confirm/Reject di pop-up ──
+  // re.phase: idle | starting | running | review (hasil siap, menunggu keputusan) | failed
+  const canReanalyze = canRunAi
+  const [re, setRe] = useState({ phase: 'idle' })
+  const [reDialog, setReDialog] = useState(false)
+  const [reNotice, setReNotice] = useState(null) // { tone: 'success'|'info'|'error', text, pm? }
+  const rePoll = useRef(null)
+  const reBusy = re.phase === 'starting' || re.phase === 'running'
+
+  const followReanalysis = useCallback(async (jobId, { openWhenDone }) => {
+    rePoll.current?.abort()
+    const ctrl = new AbortController()
+    rePoll.current = ctrl
+    setRe({ phase: 'running', jobId })
+    try {
+      const job = await pollInferenceJob(jobId, { signal: ctrl.signal })
+      if (job.status === 'completed') {
+        setRe({ phase: 'review', jobId })
+        if (openWhenDone) setReDialog(true)
+      } else {
+        setRe({ phase: 'failed', jobId, error: job.error_message })
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') return
+      setRe({ phase: 'idle' })
+      setReNotice({
+        tone: 'error',
+        text:
+          err instanceof PollTimeoutError
+            ? 'Analisis ulang belum selesai dalam batas waktu — muat ulang halaman nanti untuk meninjau hasilnya.'
+            : err.message,
+      })
+    }
+  }, [])
+
+  // Sinkron dengan status dari server saat citra dibuka / dimuat ulang (mis. kembali ke halaman ini).
+  useEffect(() => {
+    rePoll.current?.abort()
+    setReDialog(false)
+    const r = image?.reanalysis
+    if (!r) setRe({ phase: 'idle' })
+    else if (isAiRunning(r.status)) followReanalysis(r.job_id, { openWhenDone: true })
+    else if (r.status === 'completed') setRe({ phase: 'review', jobId: r.job_id })
+    else setRe({ phase: 'failed', jobId: r.job_id, error: r.error_message })
+  }, [image?.id, image?.reanalysis?.job_id, image?.reanalysis?.status, followReanalysis])
+  useEffect(() => setReNotice(null), [image?.id])
+  useEffect(() => () => rePoll.current?.abort(), [])
+
+  const runReanalysis = async () => {
+    if (!image) return
+    setReNotice(null)
+    setRe({ phase: 'starting' })
+    try {
+      const job = await startReanalysis(image.id)
+      followReanalysis(job.id, { openWhenDone: true })
+    } catch (err) {
+      setRe({ phase: 'idle' })
+      setReNotice({ tone: 'error', text: err.message })
+      if (err instanceof ApiError && err.status === 409) refreshAfterAi() // sinkronkan status citra
+    }
+  }
+
+  const onReanalysisDecided = (review) => {
+    setReDialog(false)
+    setRe({ phase: 'idle' })
+    setReNotice(
+      review === 'confirmed'
+        ? { tone: 'success', text: 'Hasil analisis ulang diterapkan.', pm: subject?.subject_type === 'post_mortem' }
+        : { tone: 'info', text: 'Hasil analisis ulang ditolak — hasil sebelumnya dipertahankan.' },
+    )
+    refreshAfterAi()
+  }
+
+  const dismissFailedReanalysis = async () => {
+    const jobId = re.jobId
+    setRe({ phase: 'idle' })
+    try {
+      await decideReanalysis(jobId, 'reject') // tutup di server agar tidak muncul lagi
+    } catch {
+      // sudah ditutup / tidak berwenang — cukup disembunyikan
+    }
+    refreshAfterAi()
+  }
+
+  const scrollToMatching = () =>
+    document.getElementById('perbandingan-morfologi')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 
   return (
     <div className="space-y-6">
@@ -483,6 +577,23 @@ export default function Analysis() {
                     {label.toUpperCase()}
                   </button>
                 ))}
+                {canReanalyze && image && (
+                  <button
+                    onClick={re.phase === 'review' ? () => setReDialog(true) : runReanalysis}
+                    disabled={reBusy || (re.phase !== 'review' && (!image.ai_processed || image.ai_active))}
+                    title={
+                      re.phase === 'review'
+                        ? 'Tinjau hasil analisis ulang yang menunggu keputusan'
+                        : !image.ai_processed
+                          ? 'Citra belum diproses AI — gunakan "Jalankan AI" di panel Tooth-level data'
+                          : 'Jalankan ulang AI; hasil baru ditinjau dulu sebelum menggantikan hasil saat ini'
+                    }
+                    className="chip bg-signal-rose/15 font-semibold text-signal-rose ring-1 ring-signal-rose/30 transition-colors hover:bg-signal-rose/25 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {reBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                    {reBusy ? 'MENGANALISIS…' : re.phase === 'review' ? 'TINJAU HASIL' : 'ANALISIS ULANG'}
+                  </button>
+                )}
                 <a
                   href={image?.image_url || undefined}
                   target="_blank"
@@ -496,6 +607,78 @@ export default function Analysis() {
                 </a>
               </div>
             </header>
+
+            {/* Status analisis ulang */}
+            {(reBusy || re.phase === 'review' || re.phase === 'failed' || reNotice) && (
+              <div className="divide-y divide-white/10 border-b border-white/10 text-[12.5px]">
+                {reBusy && (
+                  <div className="flex items-center gap-2 bg-signal-rose/10 px-5 py-2.5 text-rose-200">
+                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                    Analisis ulang sedang berjalan — hasil saat ini tetap ditampilkan sampai Anda memutuskan.
+                  </div>
+                )}
+                {re.phase === 'review' && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 bg-amber-400/10 px-5 py-2.5 text-amber-200">
+                    <span>Hasil analisis ulang siap dan menunggu keputusan (Confirm / Reject).</span>
+                    {canReanalyze && (
+                      <button
+                        onClick={() => setReDialog(true)}
+                        className="chip bg-amber-400/20 font-semibold text-amber-100 ring-1 ring-amber-300/40 hover:bg-amber-400/30"
+                      >
+                        TINJAU
+                      </button>
+                    )}
+                  </div>
+                )}
+                {re.phase === 'failed' && (
+                  <div className="flex items-start justify-between gap-3 bg-signal-rose/10 px-5 py-2.5 text-rose-200">
+                    <span>
+                      <span className="font-semibold">Analisis ulang gagal, menampilkan hasil sebelumnya.</span>
+                      {re.error && <span className="mt-0.5 block text-rose-300/80">{re.error}</span>}
+                    </span>
+                    {canReanalyze && (
+                      <button
+                        onClick={dismissFailedReanalysis}
+                        className="rounded-md p-1 text-rose-300 hover:bg-white/10 hover:text-rose-100"
+                        aria-label="Tutup pesan"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                )}
+                {reNotice && (
+                  <div
+                    className={`flex items-start justify-between gap-3 px-5 py-2.5 ${
+                      reNotice.tone === 'success'
+                        ? 'bg-teal-500/10 text-teal-200'
+                        : reNotice.tone === 'error'
+                          ? 'bg-signal-rose/10 text-rose-200'
+                          : 'bg-white/[0.04] text-slate-300'
+                    }`}
+                  >
+                    <span>
+                      {reNotice.text}
+                      {reNotice.pm && (
+                        <>
+                          {' '}
+                          <button onClick={scrollToMatching} className="font-semibold text-teal-100 underline underline-offset-2">
+                            Cari ulang kandidat AM →
+                          </button>
+                        </>
+                      )}
+                    </span>
+                    <button
+                      onClick={() => setReNotice(null)}
+                      className="rounded-md p-1 opacity-70 hover:bg-white/10 hover:opacity-100"
+                      aria-label="Tutup pesan"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Image + detections */}
             <div className="bg-viewer-900 p-6">
@@ -526,47 +709,7 @@ export default function Analysis() {
                     onLoad={(e) => setNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
                     className="block max-h-[460px] max-w-full rounded-lg object-contain"
                   />
-                  {natural && (overlay || labels) && boxes.length > 0 && (
-                    <svg
-                      viewBox={`0 0 ${natural.w} ${natural.h}`}
-                      className="pointer-events-none absolute inset-0 h-full w-full"
-                      aria-hidden="true"
-                    >
-                      {boxes.map(({ t, box }) => {
-                        const low = confValue(t) != null && confValue(t) < 85
-                        const color = low ? '#f5b544' : '#2dd4bf'
-                        return (
-                          <g key={t.id}>
-                            {overlay && (
-                              <rect
-                                x={box.x}
-                                y={box.y}
-                                width={box.w}
-                                height={box.h}
-                                fill={color}
-                                fillOpacity="0.08"
-                                stroke={color}
-                                strokeWidth={strokeW}
-                                rx={strokeW * 2}
-                              />
-                            )}
-                            {labels && (
-                              <text
-                                x={box.x + strokeW * 2}
-                                y={box.y - strokeW * 3}
-                                fill={color}
-                                fontSize={strokeW * 11}
-                                fontFamily="ui-monospace, monospace"
-                                fontWeight="600"
-                              >
-                                {t.fdi_number}
-                              </text>
-                            )}
-                          </g>
-                        )
-                      })}
-                    </svg>
-                  )}
+                  <ToothOverlay teeth={teeth} natural={natural} overlay={overlay} labels={labels} />
                 </div>
               )}
             </div>
@@ -695,6 +838,15 @@ export default function Analysis() {
         onSelect={(id) => setParam('match', id)}
         reloadKey={reloadKey}
         canRunMatching={['admin', 'examiner'].includes(user?.role)}
+      />
+
+      <ReanalysisDialog
+        open={reDialog && !!re.jobId}
+        jobId={re.jobId}
+        imageUrl={image?.image_url}
+        viewLabel={image ? viewLabel(image.view_type) : ''}
+        onClose={() => setReDialog(false)}
+        onDecided={onReanalysisDecided}
       />
     </div>
   )

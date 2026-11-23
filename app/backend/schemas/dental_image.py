@@ -10,11 +10,20 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from services.inference_status import AiStatus, ImageAiStatus
+from services.inference_status import AiStatus, ImageAiStatus, ReviewState
 
 # Sesuai tipe ENUM di database
 ViewType = Literal["depan", "kiri", "kanan"]
 PreprocessingStatus = Literal["raw", "processed", "failed"]
+
+
+class ImageReanalysisInfo(BaseModel):
+    """Analisis ulang terakhir citra yang belum diputuskan (lihat POST /inference/reanalyze)."""
+    job_id: UUID
+    status: AiStatus = Field(..., description="pending/processing = berjalan, completed = menunggu keputusan, failed = gagal")
+    review: ReviewState = "pending"
+    error_message: str | None = None
+    created_at: datetime
 
 
 class DentalImageResponse(BaseModel):
@@ -36,11 +45,17 @@ class DentalImageResponse(BaseModel):
     deleted_at: datetime | None = None
     deleted_by: UUID | None = None
     ai_status: AiStatus = Field(
-        default="none", description="Status job inferensi TERAKHIR citra ini ('none' = belum pernah dijalankan)"
+        default="none",
+        description="Status job inferensi TERAKHIR yang hasilnya berlaku ('none' = belum pernah dijalankan); "
+        "analisis ulang yang belum dikonfirmasi dilaporkan terpisah di `reanalysis`",
     )
-    ai_processed: bool = Field(default=False, description="Pernah ada job inferensi 'completed' untuk citra ini")
+    ai_processed: bool = Field(default=False, description="Pernah ada job inferensi 'completed' yang hasilnya berlaku")
     latest_job_id: UUID | None = None
     ai_error_message: str | None = Field(default=None, description="Pesan error job terakhir bila 'failed'")
+    ai_active: bool = Field(default=False, description="Ada job pending/processing untuk citra ini (termasuk analisis ulang)")
+    reanalysis: ImageReanalysisInfo | None = Field(
+        default=None, description="Analisis ulang yang belum diputuskan (berjalan / menunggu Confirm-Reject / gagal)"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -50,6 +65,16 @@ class DentalImageResponse(BaseModel):
             self.ai_processed = st.processed
             self.latest_job_id = st.latest_job_id
             self.ai_error_message = st.error_message
+            self.ai_active = st.active
+            r = st.reanalysis
+            self.reanalysis = (
+                ImageReanalysisInfo(
+                    job_id=r.job_id, status=r.status, review=r.review,
+                    error_message=r.error_message, created_at=r.created_at,
+                )
+                if r
+                else None
+            )
         return self
 
 
