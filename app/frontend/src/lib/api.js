@@ -485,3 +485,79 @@ export const TOOTH_STATUS = {
   pm_only: { label: 'Hanya di PM', cls: 'bg-sky-50 text-sky-700 ring-sky-200' },
   am_only: { label: 'Hanya di AM', cls: 'bg-slate-100 text-slate-600 ring-slate-200' },
 }
+
+// ── Inbox foto dari alat ESP32 (device captures) ─────────────────────────
+// Alat mengirim ke POST /api/v1/device/captures (X-Device-Key); foto masuk Inbox
+// berstatus 'pending' sampai dipasangkan ke subjek + sudut (admin & examiner).
+
+/**
+ * @param {{ status?: 'pending'|'assigned'|'discarded', limit?: number, offset?: number, signal?: AbortSignal }} opts
+ * @returns {Promise<{ items: object[], total: number, limit: number, offset: number }>} newest first
+ */
+export function listDeviceCaptures({ status = 'pending', limit = 50, offset = 0, signal } = {}) {
+  const params = new URLSearchParams({ status, limit: String(limit), offset: String(offset) })
+  return apiFetch(`/api/v1/device-captures?${params}`, { signal })
+}
+
+/**
+ * Subjek aktif yang citranya belum lengkap (< 3 sudut); AM hanya untuk admin.
+ * @param {{ q?: string, limit?: number, signal?: AbortSignal }} opts
+ * @returns {Promise<{ items: { id, subject_type, full_name, case_reference, created_at, filled_views: string[] }[], total: number }>}
+ */
+export function listAssignableSubjects({ q, limit = 20, signal } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (q) params.set('q', q)
+  return apiFetch(`/api/v1/device-captures/assignable-subjects?${params}`, { signal })
+}
+
+/**
+ * Unduh isi foto Inbox (same-origin, ber-token) sebagai File — dipakai untuk
+ * mengisi kotak preview upload seperti file yang dipilih manual.
+ * @returns {Promise<File>}
+ */
+export async function fetchDeviceCaptureFile(capture, { signal } = {}) {
+  let res
+  try {
+    res = await fetch(`${BASE_URL}/api/v1/device-captures/${capture.id}/file`, { headers: authHeaders(), signal })
+  } catch (err) {
+    if (err.name === 'AbortError') throw err
+    throw new ApiError('Tidak dapat terhubung ke server. Periksa koneksi lalu coba lagi.', 0)
+  }
+  if (res.status === 401) handleUnauthorized()
+  if (!res.ok) {
+    let body = null
+    try {
+      body = await res.json()
+    } catch {
+      // non-JSON body
+    }
+    throw new ApiError(errorMessage(body, res.status), res.status)
+  }
+  const blob = await res.blob()
+  const name = capture.original_filename || `device_${capture.id.slice(0, 8)}.jpg`
+  return new File([blob], name, { type: 'image/jpeg', lastModified: Date.now() })
+}
+
+/**
+ * Pasangkan foto Inbox ke subjek + sudut → menjadi citra biasa (respons = metadata citra).
+ * 403 subjek AM oleh non-admin, 409 sudut sudah terisi / foto sudah dipasangkan atau dihapus.
+ */
+export function assignDeviceCapture(captureId, { subjectId, viewType, signal } = {}) {
+  return apiFetch(`/api/v1/device-captures/${captureId}/assign`, {
+    method: 'POST',
+    json: { subject_id: subjectId, view_type: viewType },
+    signal,
+  })
+}
+
+/** Hapus dari Inbox (soft delete — file tetap tersimpan & tercatat di audit). */
+export function deleteDeviceCapture(captureId) {
+  return apiFetch(`/api/v1/device-captures/${captureId}`, { method: 'DELETE' })
+}
+
+export function formatBytes(n) {
+  if (n == null) return '–'
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}

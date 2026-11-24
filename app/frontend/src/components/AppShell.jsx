@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity,
   Database,
+  Inbox,
   LayoutGrid,
   LogOut,
   Menu,
@@ -14,7 +15,7 @@ import HeaderSearch from './HeaderSearch.jsx'
 import Logo from './Logo.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 import { initialsOf, roleLabel } from '../lib/auth.js'
-import { getStatsSummary } from '../lib/api.js'
+import { getStatsSummary, listDeviceCaptures } from '../lib/api.js'
 
 const fmtCount = (n) => (n == null ? '–' : n.toLocaleString('id-ID'))
 
@@ -22,6 +23,7 @@ const fmtCount = (n) => (n == null ? '–' : n.toLocaleString('id-ID'))
 const NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutGrid, meta: (c) => `${fmtCount(c.pairs)} pairs` },
   { to: '/identify', label: 'Upload & identify', icon: UploadCloud, meta: 'new scan' },
+  { to: '/inbox', label: 'Inbox', icon: Inbox, meta: (c) => `${fmtCount(c.inbox)} baru`, roles: ['admin', 'examiner'] },
   { to: '/review', label: 'Forensic review', icon: ShieldCheck, meta: (c) => `${fmtCount(c.waiting)} waiting` },
   { to: '/analysis', label: 'Feature analysis', icon: Activity, meta: 'live' },
   { to: '/subjects', label: 'Subject Data', icon: Database, meta: 'admin', roles: ['admin'] },
@@ -32,11 +34,12 @@ const COUNTS_REFRESH_MS = 60_000
 
 /**
  * Matching-result counts for the sidebar labels (same source as the Dashboard):
- * pairs = pending + confirmed + rejected, waiting = pending review.
+ * pairs = pending + confirmed + rejected, waiting = pending review;
+ * inbox = device photos not yet assigned (admin & examiner only).
  * Refreshed on every page change and every minute; null while unknown / on error.
  */
-function useNavCounts(pathname) {
-  const [counts, setCounts] = useState({ pairs: null, waiting: null })
+function useNavCounts(pathname, canInbox) {
+  const [counts, setCounts] = useState({ pairs: null, waiting: null, inbox: null })
 
   useEffect(() => {
     let cancelled = false
@@ -44,22 +47,32 @@ function useNavCounts(pathname) {
       getStatsSummary()
         .then(({ matching_results: m }) => {
           if (cancelled) return
-          setCounts({ pairs: m.pending_review + m.confirmed + m.rejected, waiting: m.pending_review })
+          setCounts((prev) => ({ ...prev, pairs: m.pending_review + m.confirmed + m.rejected, waiting: m.pending_review }))
         })
-        .catch(() => !cancelled && setCounts({ pairs: null, waiting: null }))
-    refresh()
-    const t = setInterval(refresh, COUNTS_REFRESH_MS)
+        .catch(() => !cancelled && setCounts((prev) => ({ ...prev, pairs: null, waiting: null })))
+    const refreshInbox = () =>
+      canInbox &&
+      listDeviceCaptures({ limit: 1 })
+        .then(({ total }) => !cancelled && setCounts((prev) => ({ ...prev, inbox: total })))
+        .catch(() => !cancelled && setCounts((prev) => ({ ...prev, inbox: null })))
+    const refreshAll = () => {
+      refresh()
+      refreshInbox()
+    }
+    refreshAll()
+    const t = setInterval(refreshAll, COUNTS_REFRESH_MS)
     return () => {
       cancelled = true
       clearInterval(t)
     }
-  }, [pathname])
+  }, [pathname, canInbox])
 
   return counts
 }
 
 const TITLES = {
   '/identify': { h: 'Upload & identify', s: 'Kirim gambar dental post-mortem ke layanan identifikasi AI' },
+  '/inbox': { h: 'Inbox', s: 'Foto dari alat yang belum dipasangkan ke subjek' },
   '/dashboard': { h: 'Dashboard', s: 'Rekam ante-mortem dan post-mortem yang dipasangkan oleh engine' },
   '/review': { h: 'Forensic review', s: 'Hasil cocok yang memerlukan konfirmasi anggota tim' },
   '/analysis': { h: 'Feature extraction', s: 'Pengukuran tingkat gigi dari radiograf post-mortem' },
@@ -116,7 +129,7 @@ export default function AppShell() {
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const { user, logout } = useAuth()
-  const counts = useNavCounts(pathname)
+  const counts = useNavCounts(pathname, ['admin', 'examiner'].includes(user?.role))
 
   const title =
     TITLES[pathname] ??

@@ -1,15 +1,15 @@
-# Compose PRODUKSI backend Dentify — LXC webapp (100.64.106.122).
+# Compose PRODUKSI Dentify (backend + frontend) — LXC webapp (100.64.106.122).
 # Terpisah dari docker-compose.yml di root repo (itu khusus dev lokal: PG/MinIO/Chroma).
 #
 # Di server file ini diletakkan di /opt/dentify-deploy/. PostgreSQL, MinIO, ChromaDB & nginx
-# tetap native; hanya backend yang berjalan di container.
+# tetap native; backend & frontend berjalan di container (nginx host meneruskan ke keduanya).
 #
-# Deploy / redeploy (pastikan TIDAK ada job AI pending/processing):
-#   sudo docker load -i /tmp/dentify-backend-<TAG>.tar
-#   sudo docker tag dentify-backend:<TAG> dentify-backend:current
-#   cd /opt/dentify-deploy && sudo docker compose -f docker-compose.prod.yml up -d
+# Deploy / redeploy (backend: pastikan TIDAK ada job AI pending/processing):
+#   sudo docker load -i /tmp/dentify-<backend|frontend>-<TAG>.tar
+#   sudo docker tag dentify-<backend|frontend>:<TAG> dentify-<backend|frontend>:current
+#   cd /opt/dentify-deploy && sudo docker compose -f docker-compose.prod.yml up -d <backend|frontend>
 # Rollback image : tag ulang <TAG lama> sebagai :current, lalu `up -d` lagi.
-# Rollback total : `docker compose ... down` lalu `systemctl enable --now dentify-backend`.
+# Rollback total backend : `docker compose ... stop backend` lalu `systemctl enable --now dentify-backend`.
 
 services:
   backend:
@@ -36,3 +36,27 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
+
+  # Frontend statis (build Vite) di nginx non-root. nginx HOST tetap di depan:
+  # port 80, /api & /health → backend :8000, sisanya → container ini (127.0.0.1:8081).
+  # Config nginx host: deploy/nginx-dentify.conf.
+  frontend:
+    image: dentify-frontend:current
+    container_name: dentify-frontend
+    network_mode: host
+    environment:
+      FRONTEND_LISTEN: "127.0.0.1:8081"   # hanya lokal; diakses lewat nginx host
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /etc/nginx/conf.d:uid=101,gid=101   # entrypoint menulis config hasil template di sini
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

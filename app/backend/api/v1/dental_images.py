@@ -9,7 +9,6 @@ Role akses:
 """
 
 import os
-import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 from uuid import UUID
@@ -26,7 +25,6 @@ from fastapi import (
     status,
 )
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
@@ -43,6 +41,12 @@ from schemas.dental_image import (
     ViewType,
 )
 from schemas.tooth_record import ToothRecordListResponse, ToothRecordResponse
+from services.dental_image_service import (
+    add_dental_image,
+    build_object_name,
+    ensure_view_free,
+    get_active_subject,
+)
 from services.subject_embedding import recompute_subject_embedding
 from services.inference_status import ai_status_for_images, completed_job_exists
 from services.storage_service import storage_service
@@ -81,14 +85,7 @@ async def upload_dental_image(
     """Upload citra intraoral ke MinIO dan rekam metadata ke database."""
 
     # 1. Validasi keberadaan subjek (dan tidak sedang di-soft-delete)
-    sub_stmt = select(Subject).where(Subject.id == subject_id, Subject.is_deleted == False)
-    sub_res = await db.execute(sub_stmt)
-    subject = sub_res.scalar_one_or_none()
-    if not subject:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Subjek dengan ID '{subject_id}' tidak ditemukan atau telah dihapus",
-        )
+    subject = await get_active_subject(db, subject_id)
 
     ensure_can_modify_subject_type(current_user, subject.subject_type)
 
@@ -105,21 +102,7 @@ async def upload_dental_image(
 
     # 3. Validasi constraint unik (subject_id, view_type)
     # Satu subjek hanya boleh memiliki 1 citra aktif per sudut pandang (depan/kiri/kanan)
-    img_stmt = select(DentalImage).where(
-        DentalImage.subject_id == subject_id,
-        DentalImage.view_type == view_type,
-        DentalImage.is_deleted == False,
-    )
-    img_res = await db.execute(img_stmt)
-    existing_img = img_res.scalar_one_or_none()
-    if existing_img:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Citra intraoral untuk subjek ini dengan sudut pandang '{view_type}' sudah ada. "
-                "Hapus citra lama terlebih dahulu jika ingin mengganti."
-            ),
-        )
+    await ensure_view_free(db, subject_id, view_type)
 
     # 4. Baca konten berkas dan kalkulasi hash SHA-256
     file_bytes = await file.read()
@@ -138,8 +121,7 @@ async def upload_dental_image(
         ext = ".jpg" if "jpeg" in content_type else ".png" if "png" in content_type else ".webp"
 
     # Nama objek di MinIO: subjects/{subject_id}/{view_type}_{short_id}{ext}
-    unique_suffix = uuid.uuid4().hex[:8]
-    object_name = f"subjects/{subject_id}/{view_type}_{unique_suffix}{ext}"
+    object_name = build_object_name(subject_id, view_type, ext)
 
     # 5. Simpan file ke MinIO via storage_service
     storage_service.upload_image(
@@ -149,32 +131,17 @@ async def upload_dental_image(
     )
 
     # 6. Simpan metadata ke tabel dental_images
-    now = datetime.now(timezone.utc)
-    dental_image = DentalImage(
+    dental_image = await add_dental_image(
+        db,
         subject_id=subject_id,
         view_type=view_type,
         file_path=object_name,
         file_hash=file_hash,
         device_id=device_id,
-        preprocessing_status="raw",
         captured_at=captured_at,
-        uploaded_at=now,
-        is_deleted=False,
     )
-
-    db.add(dental_image)
-    try:
-        await db.commit()
-        await db.refresh(dental_image)
-    except IntegrityError as e:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Gagal menyimpan citra: constraint unik sudut pandang '{view_type}' "
-                "untuk subjek ini terlanggar."
-            ),
-        ) from e
+    await db.commit()
+    await db.refresh(dental_image)
 
     # 7. Generate presigned URL sementara untuk respon
     presigned_url = storage_service.get_presigned_url(dental_image.file_path)

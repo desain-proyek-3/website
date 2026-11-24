@@ -15,6 +15,7 @@ venv/
 tests/
 scripts/mock_ai_service.py
 scripts/device_receiver.py
+scripts/mock_device.py
 scripts/_device_inbox/
 
 # Artefak lain

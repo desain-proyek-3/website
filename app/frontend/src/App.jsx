@@ -9,6 +9,7 @@ import Analysis from './pages/Analysis.jsx'
 import Identify from './pages/Identify.jsx'
 import Users from './pages/Users.jsx'
 import SubjectData from './pages/SubjectData.jsx'
+import Inbox from './pages/Inbox.jsx'
 
 export default function App() {
   return (
@@ -31,6 +32,14 @@ export default function App() {
         <Route path="/review" element={<Review />} />
         <Route path="/review/report/:id" element={<Report />} />
         <Route path="/analysis" element={<Analysis />} />
+        <Route
+          path="/inbox"
+          element={
+            <ProtectedRoute roles={['admin', 'examiner']}>
+              <Inbox />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="/subjects"
           element={

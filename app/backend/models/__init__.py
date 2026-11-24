@@ -11,8 +11,11 @@ from models.embedding import Embedding
 from models.matching_result import MatchingResult
 from models.audit_log import AuditLog
 from models.inference_job import InferenceJob
+from models.device import Device, DeviceCapture
 
 __all__ = [
+    "Device",
+    "DeviceCapture",
     "User",
     "Subject",
     "DentalImage",

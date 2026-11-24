@@ -13,6 +13,7 @@ from api.v1.inference import router as inference_router
 from api.v1.users import router as users_router
 from api.v1.matching_results import router as matching_results_router
 from api.v1.stats import router as stats_router
+from api.v1.device_captures import router as device_captures_router
 
 api_router = APIRouter()
 
@@ -25,4 +26,5 @@ api_router.include_router(inference_router)
 api_router.include_router(users_router)
 api_router.include_router(matching_results_router)
 api_router.include_router(stats_router)
+api_router.include_router(device_captures_router)
 

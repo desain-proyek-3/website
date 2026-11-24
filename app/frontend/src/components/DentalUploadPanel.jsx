@@ -1,6 +1,12 @@
-import { AlertTriangle, CheckCircle2, CircleDot, Loader2, RotateCcw, Sparkles } from 'lucide-react'
+import { useState } from 'react'
+import { AlertTriangle, CheckCircle2, CircleDot, Cpu, Loader2, RotateCcw, Sparkles } from 'lucide-react'
 import Dropzone from './Dropzone.jsx'
-import { VIEW_TYPES } from '../lib/api.js'
+import DevicePickerDialog from './DevicePickerDialog.jsx'
+import { fmtDateTime } from './DeviceCaptureCard.jsx'
+import ViewPicker from './ViewPicker.jsx'
+import { useAuth } from '../context/AuthContext.jsx'
+
+const DEVICE_ROLES = ['admin', 'examiner']
 
 const STEPS = [
   { key: 'uploading', label: 'Mengunggah citra' },
@@ -9,41 +15,45 @@ const STEPS = [
 ]
 
 /**
- * Angle picker + dropzone + process/retry/reset buttons + AI stepper + error box.
- * Driven entirely by a `useDentalUpload()` result passed as `upload`.
+ * Angle picker + "Upload dari device" + dropzone + process/retry/reset buttons
+ * + AI stepper + error box. Driven entirely by a `useDentalUpload()` result
+ * passed as `upload`.
  *
  * @param {{ upload: ReturnType<typeof import('../lib/useDentalUpload.js').useDentalUpload>,
- *           allFilledHint?: string }} props
+ *           allFilledHint?: string, subjectLabel?: string }} props
  */
-export default function DentalUploadPanel({ upload: u, allFilledHint }) {
+export default function DentalUploadPanel({ upload: u, allFilledHint, subjectLabel }) {
+  const { user } = useAuth()
+  const [pickerOpen, setPickerOpen] = useState(false)
   const stepIndex = STEPS.findIndex((s) => s.key === u.phase)
   const cannotUpload = !u.file || u.busy || u.uploaded || u.allViewsFilled || u.filledViews.includes(u.viewType)
+  const canUseDevice = DEVICE_ROLES.includes(user?.role)
+  const deviceDisabled = !u.subjectId || u.busy || !!u.uploaded || u.allViewsFilled
 
   return (
     <>
       {/* Angle */}
       <div className="mt-4">
         <div className="text-[12.5px] font-medium text-slate-700">Sudut citra</div>
-        <div className="mt-1.5 inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
-          {VIEW_TYPES.map((v) => {
-            const filled = u.filledViews.includes(v.value)
-            const active = u.viewType === v.value
-            return (
-              <button
-                key={v.value}
-                type="button"
-                disabled={filled || u.busy}
-                onClick={() => u.setViewType(v.value)}
-                title={filled ? 'Sudut ini sudah memiliki citra' : undefined}
-                className={`flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-[13px] font-medium transition-colors
-                  ${active && !filled ? 'bg-white text-teal-700 shadow-sm' : 'text-slate-600'}
-                  ${filled ? 'cursor-not-allowed text-slate-400' : 'hover:text-ink'}`}
-              >
-                {filled && <CheckCircle2 className="h-3.5 w-3.5 text-teal-600" />}
-                {v.label}
-              </button>
-            )
-          })}
+        <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
+          <ViewPicker
+            value={u.viewType}
+            onChange={u.setViewType}
+            filled={u.filledViews}
+            disabled={u.busy}
+          />
+          {canUseDevice && (
+            <button
+              type="button"
+              onClick={() => setPickerOpen(true)}
+              disabled={deviceDisabled}
+              title={!u.subjectId ? 'Buat atau pilih subjek terlebih dahulu' : 'Ambil foto dari Inbox alat'}
+              className="btn-ghost h-10 px-3.5 text-[13px] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Cpu className="h-4 w-4" />
+              Upload dari device
+            </button>
+          )}
         </div>
         {u.allViewsFilled && allFilledHint && <p className="mt-2 text-[12px] text-slate-500">{allFilledHint}</p>}
       </div>
@@ -57,6 +67,14 @@ export default function DentalUploadPanel({ upload: u, allFilledHint }) {
           onClear={u.reset}
           disabled={u.busy}
         />
+        {u.deviceCapture && (
+          <p className="mt-2 flex flex-wrap items-center gap-x-1.5 text-[12px] text-slate-500">
+            <Cpu className="h-3.5 w-3.5 text-teal-600" />
+            Foto dari device <span className="font-medium text-slate-700">{u.deviceCapture.device_name || u.deviceCapture.device_code}</span>
+            · diambil {fmtDateTime(u.deviceCapture.captured_at || u.deviceCapture.received_at)}
+            {!u.uploaded && <span>· tersimpan ke subjek saat diproses</span>}
+          </p>
+        )}
       </div>
 
       <div className="mt-5 flex flex-wrap gap-3">
@@ -131,6 +149,15 @@ export default function DentalUploadPanel({ upload: u, allFilledHint }) {
             <p className="mt-0.5 break-words text-[12.5px] text-rose-700">{u.errorMsg}</p>
           </div>
         </div>
+      )}
+
+      {canUseDevice && (
+        <DevicePickerDialog
+          open={pickerOpen}
+          onClose={() => setPickerOpen(false)}
+          upload={u}
+          subjectLabel={subjectLabel}
+        />
       )}
     </>
   )

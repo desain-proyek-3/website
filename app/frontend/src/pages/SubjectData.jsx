@@ -586,7 +586,11 @@ export default function SubjectData() {
 
               <p className="mt-4 text-[12.5px] leading-snug text-slate-500">{meta.aiHint}</p>
 
-              <DentalUploadPanel upload={upload} allFilledHint="Ketiga sudut subjek ini sudah terisi." />
+              <DentalUploadPanel
+                upload={upload}
+                subjectLabel={selected.full_name || `Tanpa nama (${selected.id.slice(0, 8)})`}
+                allFilledHint="Ketiga sudut subjek ini sudah terisi."
+              />
 
               {lastResult && (
                 <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-teal-200 bg-teal-50 px-4 py-3">

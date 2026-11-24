@@ -1,0 +1,12 @@
+# Allowlist: hanya yang dibutuhkan untuk `npm ci` + `vite build`
+*
+!package.json
+!package-lock.json
+!index.html
+!vite.config.js
+!tailwind.config.js
+!postcss.config.js
+!.env.production
+!src/
+!public/
+!docker/

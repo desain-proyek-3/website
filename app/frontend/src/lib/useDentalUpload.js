@@ -3,6 +3,7 @@ import {
   ApiError,
   PollTimeoutError,
   VIEW_TYPES,
+  assignDeviceCapture,
   listSubjectImages,
   normalizeDetectedTeeth,
   pollInferenceJob,
@@ -17,6 +18,10 @@ export const DEFAULT_NO_ACCESS_MSG = 'Akun Anda tidak memiliki akses untuk mengu
 /**
  * Upload one image for a subject, trigger inference and poll it to completion.
  * Shared by Identify (post-mortem) and SubjectData (ante-/post-mortem).
+ *
+ * The image comes either from the user's disk (selectFile) or from the device
+ * Inbox (selectDeviceCapture): the Inbox photo is shown in the same preview,
+ * and "process" then assigns the capture to the subject instead of uploading.
  *
  * phase: idle | uploading | pending | processing | done | failed | error
  *
@@ -35,6 +40,8 @@ export function useDentalUpload(subjectId, { onCompleted, noAccessMessage = DEFA
   // then be retried without re-uploading (and the file can't be re-sent).
   const [uploaded, setUploaded] = useState(null) // { imageId, view }
   const [filledViews, setFilledViews] = useState([])
+  // Inbox capture the current `file` came from (null = picked from disk)
+  const [deviceCapture, setDeviceCapture] = useState(null)
   const abortRef = useRef(null)
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
@@ -86,6 +93,7 @@ export function useDentalUpload(subjectId, { onCompleted, noAccessMessage = DEFA
   const reset = useCallback(() => {
     abortRef.current?.abort()
     setFile(null)
+    setDeviceCapture(null)
     setUploaded(null)
     setErrorMsg('')
     setPhase('idle')
@@ -108,6 +116,17 @@ export function useDentalUpload(subjectId, { onCompleted, noAccessMessage = DEFA
 
   const selectFile = (f) => {
     setFile(f)
+    setDeviceCapture(null)
+    setUploaded(null)
+    setPhase('idle')
+    setErrorMsg('')
+  }
+
+  /** Use a photo from the device Inbox (file = its downloaded bytes) for `view`. */
+  const selectDeviceCapture = (capture, f, view) => {
+    setFile(f)
+    setDeviceCapture(capture)
+    if (view) setViewType(view)
     setUploaded(null)
     setPhase('idle')
     setErrorMsg('')
@@ -156,13 +175,19 @@ export function useDentalUpload(subjectId, { onCompleted, noAccessMessage = DEFA
   const uploadSelected = async (signal) => {
     const view = viewType
     try {
-      const image = await uploadDentalImage({ subjectId, viewType: view, file, signal })
+      const image = deviceCapture
+        ? await assignDeviceCapture(deviceCapture.id, { subjectId, viewType: view, signal })
+        : await uploadDentalImage({ subjectId, viewType: view, file, signal })
       setFilledViews((prev) => [...new Set([...prev, view])])
       setUploaded({ imageId: image.id, view })
       return { image, view }
     } catch (err) {
       if (err.name === 'AbortError') return null
-      if (err instanceof ApiError && err.status === 409) {
+      if (err instanceof ApiError && err.status === 409 && deviceCapture) {
+        // view already filled, or the Inbox photo was assigned/deleted meanwhile
+        await refreshFilledViews()
+        setErrorMsg(err.message)
+      } else if (err instanceof ApiError && err.status === 409) {
         await refreshFilledViews()
         setErrorMsg(
           `Sudut "${view}" untuk subjek ini sudah memiliki citra. Pilih sudut lain, ` +
@@ -196,6 +221,8 @@ export function useDentalUpload(subjectId, { onCompleted, noAccessMessage = DEFA
   const allViewsFilled = VIEW_TYPES.every((v) => filledViews.includes(v.value))
 
   return {
+    subjectId,
+    deviceCapture,
     viewType,
     setViewType,
     file,
@@ -208,6 +235,7 @@ export function useDentalUpload(subjectId, { onCompleted, noAccessMessage = DEFA
     filledViews,
     allViewsFilled,
     selectFile,
+    selectDeviceCapture,
     reset,
     process,
     retryInference,

@@ -12,6 +12,7 @@ from datetime import timedelta
 from typing import BinaryIO
 
 from minio import Minio
+from minio.commonconfig import CopySource
 from minio.error import S3Error
 
 from core.config import settings
@@ -107,6 +108,44 @@ class StorageService:
         except Exception as e:
             logger.error(f"Gagal membuat presigned URL untuk '{object_name}': {e}")
             raise RuntimeError(f"Gagal membuat presigned URL: {e}") from e
+
+    def get_object_bytes(self, object_name: str, bucket_name: str | None = None) -> bytes:
+        """
+        Unduh isi objek dari MinIO (untuk file kecil seperti citra intraoral).
+        """
+        bucket = bucket_name or self.default_bucket
+        response = None
+        try:
+            response = self.client.get_object(bucket, object_name)
+            return response.read()
+        except Exception as e:
+            logger.error(f"Gagal mengunduh objek '{object_name}': {e}")
+            raise RuntimeError(f"Gagal mengunduh objek dari object storage: {e}") from e
+        finally:
+            if response is not None:
+                response.close()
+                response.release_conn()
+
+    def copy_object(self, source_name: str, dest_name: str, bucket_name: str | None = None) -> str:
+        """
+        Salin objek di sisi server MinIO (tanpa unduh-unggah ulang). Isi identik → hash tetap.
+        """
+        bucket = bucket_name or self.default_bucket
+        try:
+            self.client.copy_object(bucket, dest_name, CopySource(bucket, source_name))
+            logger.info(f"Objek disalin di MinIO: {source_name} -> {dest_name}")
+            return dest_name
+        except Exception as e:
+            logger.error(f"Gagal menyalin objek '{source_name}' -> '{dest_name}': {e}")
+            raise RuntimeError(f"Gagal menyalin objek di object storage: {e}") from e
+
+    def remove_object(self, object_name: str, bucket_name: str | None = None) -> None:
+        """Hapus objek (dipakai untuk membersihkan salinan yang gagal dicatat ke DB)."""
+        bucket = bucket_name or self.default_bucket
+        try:
+            self.client.remove_object(bucket, object_name)
+        except Exception as e:
+            logger.warning(f"Gagal menghapus objek '{object_name}': {e}")
 
     def object_exists(self, object_name: str, bucket_name: str | None = None) -> bool:
         """

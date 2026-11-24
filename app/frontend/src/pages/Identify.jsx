@@ -248,6 +248,7 @@ export default function Identify() {
 
               <DentalUploadPanel
                 upload={upload}
+                subjectLabel={subject.full_name || `Tanpa nama (${subject.id.slice(0, 8)})`}
                 allFilledHint="Ketiga sudut subjek ini sudah terisi. Buat subjek baru untuk mengunggah citra lain."
               />
             </>

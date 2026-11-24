@@ -22,14 +22,17 @@ JANGAN di-deploy — hanya untuk development.
 """
 
 import hashlib
+import html
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse
 
 DEVICE_KEY = os.getenv("DEVICE_KEY", "dev-device-key")
 PORT = int(os.getenv("DEVICE_RECEIVER_PORT", "8090"))
@@ -44,6 +47,51 @@ app = FastAPI(title="Dentify Device Receiver (dev)")
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "service": "device-receiver"}
+
+
+# Nama file yang dibuat receiver sendiri — mencegah path traversal di /captures/{name}
+_SAFE_NAME = re.compile(r"^[\w.-]+\.(jpg|json)$")
+
+
+@app.get("/captures", response_class=HTMLResponse)
+async def gallery() -> str:
+    """Galeri sederhana: foto terbaru di atas, dengan metadata dari file .json."""
+    items = sorted(OUT_DIR.glob("*.jpg"), reverse=True) if OUT_DIR.exists() else []
+    cards = []
+    for jpg in items:
+        meta_path = jpg.with_suffix(".json")
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+        name = html.escape(jpg.name)
+        info = "<br>".join(
+            f"<b>{html.escape(k)}</b>: {html.escape(str(v))}" for k, v in meta.items()
+        )
+        cards.append(
+            f'<div class="card"><a href="/captures/{name}" target="_blank">'
+            f'<img src="/captures/{name}" loading="lazy"></a>'
+            f'<div class="meta"><b>{name}</b><br>{info}</div></div>'
+        )
+    body = "".join(cards) or "<p>Belum ada foto.</p>"
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Device Inbox</title><style>"
+        "body{font-family:system-ui,sans-serif;margin:16px;background:#f5f5f5;color:#222}"
+        ".card{background:#fff;border-radius:8px;padding:12px;margin-bottom:16px;"
+        "display:flex;gap:16px;flex-wrap:wrap}"
+        ".card img{max-width:min(100%,640px);border-radius:4px;image-rendering:auto}"
+        ".meta{font-size:13px;line-height:1.6;word-break:break-all;flex:1;min-width:240px}"
+        "</style></head><body>"
+        f"<h2>Device Inbox ({len(items)} foto)</h2>"
+        "<p>Klik foto untuk ukuran asli. Muat ulang halaman untuk melihat foto baru.</p>"
+        f"{body}</body></html>"
+    )
+
+
+@app.get("/captures/{name}")
+async def capture_file(name: str) -> FileResponse:
+    if not _SAFE_NAME.match(name) or not (OUT_DIR / name).is_file():
+        raise HTTPException(404, "File tidak ditemukan")
+    return FileResponse(OUT_DIR / name)
 
 
 @app.post("/api/v1/device/captures", status_code=201)
