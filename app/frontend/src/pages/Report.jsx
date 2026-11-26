@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { AlertTriangle, ArrowLeft, FileText, Loader2, Printer, RotateCcw } from 'lucide-react'
-import { ApiError, VIEW_TYPES, generateReportNarrative, getIdentificationReport } from '../lib/api.js'
+import { AlertTriangle, ArrowLeft, Download, FileText, Loader2, Printer, RotateCcw } from 'lucide-react'
+import { ApiError, generateReportNarrative, getIdentificationReport } from '../lib/api.js'
+import {
+  defaultReportFilename,
+  fmtDate,
+  num,
+  person,
+  refLabel,
+  sanitizePdfFilename,
+  viewLabel,
+} from '../lib/reportFormat.js'
 import ToothComparisonTable from '../components/ToothComparisonTable.jsx'
-
-const fmtDate = (v) =>
-  v ? new Date(v).toLocaleString('id-ID', { dateStyle: 'long', timeStyle: 'short' }) : '–'
-const person = (p) => (p ? `${p.full_name || p.username} (${p.username})` : '–')
-const viewLabel = (v) => VIEW_TYPES.find((x) => x.value === v)?.label || v
-const num = (v, digits = 2, suffix = '') => (v == null ? 'Belum tersedia' : `${Number(v).toFixed(digits)}${suffix}`)
 
 function Section({ no, title, children }) {
   return (
@@ -56,12 +59,6 @@ function useElapsedSeconds(running) {
     return () => clearInterval(timer)
   }, [running])
   return elapsed
-}
-
-const refLabel = (r) => {
-  const section = r.section && r.section.trim() !== '-' ? r.section : null
-  return [r.source || 'Sumber tidak diketahui', r.page != null ? `hlm. ${r.page}` : null].filter(Boolean).join(', ') +
-    (section ? ` — ${section}` : '')
 }
 
 /** Section 4: AI (RAG) narrative — available / not configured / generating / failed. */
@@ -145,7 +142,11 @@ function AiAnalysis({ narrative, generating, error, onRetry }) {
   )
 }
 
-/** INTERPOL DVI identification report for one confirmed PM–AM pair; print → PDF. */
+/**
+ * INTERPOL DVI identification report for one confirmed PM–AM pair.
+ * "Unduh PDF" renders the PDF in the browser (components/ReportPdf.jsx) and downloads it
+ * under the chosen file name; "Cetak" keeps the browser print dialog for paper copies.
+ */
 export default function Report() {
   const { id } = useParams()
   const [report, setReport] = useState(null)
@@ -154,6 +155,62 @@ export default function Report() {
   const [generating, setGenerating] = useState(false)
   const [narrativeError, setNarrativeError] = useState(null)
   const generationRef = useRef(null) // AbortController of the running generation
+  // PDF file name: automatic "<ref>_DD-MM-YYYY_HH-mm.pdf" (time refreshed at download)
+  // until the user types their own.
+  const [filename, setFilename] = useState('')
+  const [filenameEdited, setFilenameEdited] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+  const [downloadError, setDownloadError] = useState(null)
+
+  /** Final file name for this download/print; also shows the normalized name in the box. */
+  const resolveFilename = () => {
+    const name = (filenameEdited && sanitizePdfFilename(filename)) || defaultReportFilename(report.case_reference)
+    setFilename(name)
+    if (!sanitizePdfFilename(filename)) setFilenameEdited(false)
+    return name
+  }
+
+  const handleDownload = async () => {
+    const name = resolveFilename()
+    setDownloading(true)
+    setDownloadError(null)
+    try {
+      const { downloadReportPdf } = await import('../components/ReportPdf.jsx')
+      await downloadReportPdf({ report, narrative, filename: name })
+    } catch (err) {
+      setDownloadError(`PDF gagal dibuat: ${err.message || err}`)
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  const handlePrint = () => {
+    // Browsers suggest document.title as the name when "Save as PDF" is picked in the dialog.
+    const name = resolveFilename()
+    const previousTitle = document.title
+    document.title = name.replace(/\.pdf$/i, '')
+    const restore = () => {
+      document.title = previousTitle
+      window.removeEventListener('afterprint', restore)
+    }
+    window.addEventListener('afterprint', restore)
+    window.print()
+  }
+
+  const onFilenameBlur = () => {
+    const clean = sanitizePdfFilename(filename)
+    if (!filenameEdited) return
+    if (clean) setFilename(clean)
+    else {
+      setFilenameEdited(false)
+      setFilename(defaultReportFilename(report.case_reference))
+    }
+  }
+
+  const resetFilename = () => {
+    setFilenameEdited(false)
+    setFilename(defaultReportFilename(report.case_reference))
+  }
 
   const generateNarrative = useCallback(() => {
     generationRef.current?.abort()
@@ -182,6 +239,9 @@ export default function Report() {
         if (cancelled) return
         setReport(r)
         setNarrative(r.narrative)
+        setFilename(defaultReportFilename(r.case_reference))
+        setFilenameEdited(false)
+        setDownloadError(null)
         // Generated once per match and stored by the backend; afterwards it is reused as-is.
         if (r.narrative.status === 'pending') generateNarrative()
       })
@@ -222,12 +282,12 @@ export default function Report() {
   }
 
   const { pm_subject: pm, am_subject: am, scores, decision } = report
-  // Printing waits for the AI analysis; only an unconfigured RAG service may print without it.
+  // Download/print wait for the AI analysis; only an unconfigured RAG service may go without it.
   const printReady = narrative.status === 'available' || narrative.status === 'not_available'
   const printHint = printReady
     ? undefined
     : narrativeError && !generating
-      ? 'Analisis AI gagal — coba lagi di bagian 4 sebelum mencetak'
+      ? 'Analisis AI gagal — coba lagi di bagian 4 sebelum mengunduh atau mencetak'
       : 'Tunggu hingga analisis AI selesai disusun'
   const subjectLabel = (sid) => (sid === pm.id ? 'PM' : 'AM')
   const images = [...report.images].sort(
@@ -241,16 +301,38 @@ export default function Report() {
           <ArrowLeft className="h-3.5 w-3.5" />
           Forensic Review
         </Link>
-        <button
-          onClick={() => window.print()}
-          disabled={!printReady}
-          title={printHint}
-          className="btn-primary h-9 px-4 text-[12.5px] disabled:cursor-not-allowed"
-        >
-          {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Printer className="h-3.5 w-3.5" />}
-          {generating ? 'Menunggu analisis AI…' : 'Cetak / simpan PDF'}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={handlePrint}
+            disabled={!printReady || downloading}
+            title={printHint}
+            className="btn-ghost h-9 px-3.5 text-[12.5px] disabled:cursor-not-allowed"
+          >
+            <Printer className="h-3.5 w-3.5" />
+            Cetak
+          </button>
+          <button
+            onClick={handleDownload}
+            disabled={!printReady || downloading}
+            title={printHint}
+            className="btn-primary h-9 px-4 text-[12.5px] disabled:cursor-not-allowed"
+          >
+            {generating || downloading ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Download className="h-3.5 w-3.5" />
+            )}
+            {generating ? 'Menunggu analisis AI…' : downloading ? 'Menyiapkan PDF…' : 'Unduh PDF'}
+          </button>
+        </div>
       </div>
+
+      {downloadError && (
+        <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-[12.5px] text-red-900 print:hidden">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+          {downloadError}
+        </div>
+      )}
 
       {/* Ctrl+P bypasses the disabled button → print a notice instead of an incomplete report. */}
       {!printReady && (
@@ -270,6 +352,43 @@ export default function Report() {
             <p className="mt-1 text-[13px] text-slate-500">
               Referensi kasus: <span className="font-semibold text-ink">{report.case_reference || '–'}</span>
             </p>
+            <div className="mt-3 w-full max-w-[460px] print:hidden">
+              <label htmlFor="report-filename" className="readout">
+                NAMA FILE PDF
+              </label>
+              <div className="mt-1 flex items-center gap-1.5">
+                <input
+                  id="report-filename"
+                  type="text"
+                  value={filename}
+                  onChange={(e) => {
+                    setFilename(e.target.value)
+                    setFilenameEdited(true)
+                  }}
+                  onBlur={onFilenameBlur}
+                  onKeyDown={(e) => e.key === 'Enter' && printReady && !downloading && handleDownload()}
+                  maxLength={200}
+                  spellCheck={false}
+                  className="h-9 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 font-mono text-[12.5px] text-ink focus:border-teal-500"
+                />
+                {filenameEdited && (
+                  <button
+                    type="button"
+                    onClick={resetFilename}
+                    title="Kembalikan ke nama otomatis"
+                    aria-label="Kembalikan ke nama otomatis"
+                    className="btn-ghost h-9 w-9 shrink-0 px-0"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+              <p className="mt-1 text-[11.5px] text-slate-400">
+                {filenameEdited
+                  ? 'Nama ini dipakai saat mengunduh. Karakter yang tidak diizinkan diganti "-".'
+                  : 'Tanggal & jam diperbarui otomatis saat PDF diunduh.'}
+              </p>
+            </div>
           </div>
           <dl className="text-right text-[12px] text-slate-500">
             <div>Dibuat {fmtDate(report.generated_at)}</div>

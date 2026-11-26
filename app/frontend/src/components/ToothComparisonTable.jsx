@@ -1,17 +1,5 @@
 import { TOOTH_STATUS } from '../lib/api.js'
-
-const VIEW_SHORT = { depan: 'D', kiri: 'Ki', kanan: 'Ka' }
-
-const fmtValue = (v) => {
-  if (v == null) return '–'
-  if (typeof v === 'number') return Number.isInteger(v) ? String(v) : v.toFixed(2).replace(/\.?0+$/, '')
-  if (typeof v === 'boolean') return v ? 'ya' : 'tidak'
-  return typeof v === 'object' ? JSON.stringify(v) : String(v)
-}
-
-const fmtDelta = (d) => (d == null ? '' : `Δ ${d > 0 ? '+' : ''}${fmtValue(d)}`)
-
-const fmtConf = (c) => (c == null ? '–' : `${c.toFixed(1)}%`)
+import { VIEW_SHORT, fmtConf, fmtDelta, fmtValue } from '../lib/reportFormat.js'
 
 function Side({ side }) {
   if (!side) return <span className="text-slate-300">tidak terdeteksi</span>
