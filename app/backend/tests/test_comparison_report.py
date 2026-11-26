@@ -28,7 +28,9 @@ from models.audit_log import AuditLog
 from models.embedding import Embedding
 from models.matching_result import MatchingResult
 from models.tooth_record import ToothRecord
+from models.view_embedding import ViewEmbedding
 from tests._support import (
+    add_view_embeddings,
     create_subject,
     create_user,
     deactivate_user,
@@ -83,6 +85,11 @@ class TestComparisonAndReport(unittest.TestCase):
                     ))
             for sid in cls.subjects:
                 session.add(Embedding(subject_id=UUID(sid), vector=vec, model_version=TEST_MODEL_VERSION))
+            # Pencocokan per sudut: sudut yang sama PM & AM = depan
+            add_view_embeddings(session, [
+                (cls.pm if key.startswith("pm") else cls.am, img, key.split("_")[1], vec)
+                for key, img in cls.img.items()
+            ], TEST_MODEL_VERSION)
         run_db(seed)
 
         status, res = make_request(
@@ -104,6 +111,7 @@ class TestComparisonAndReport(unittest.TestCase):
                 or_(MatchingResult.pm_subject_id.in_(ids), MatchingResult.am_subject_id.in_(ids))
             ))
             await session.execute(delete(Embedding).where(Embedding.subject_id.in_(ids)))
+            await session.execute(delete(ViewEmbedding).where(ViewEmbedding.subject_id.in_(ids)))
             await session.execute(delete(ToothRecord).where(ToothRecord.dental_image_id.in_(image_ids)))
         run_db(cleanup)
         for sid in cls.subjects:

@@ -1,12 +1,13 @@
 """
 Dentify API v1 — Matching Results Endpoints
 Pencocokan biometrik 1:N subjek post-mortem (PM) terhadap seluruh subjek
-ante-mortem (AM) via cosine similarity pgvector pada tabel `embeddings`
-(1 embedding 512-dim per subjek), plus verifikasi human-in-the-loop.
+ante-mortem (AM) PER SUDUT via cosine similarity pgvector pada tabel `view_embeddings`
+(1 embedding 512-dim per citra; PM sudut X vs AM sudut X, skor = rata-rata sudut yang
+sama — services/view_matching.py), plus verifikasi human-in-the-loop.
 
 Aturan:
 - Hanya subjek aktif (bukan soft-deleted) yang ikut dicocokkan / ditampilkan.
-- confidence_score = max(cosine_similarity, 0) × 100 (persen).
+- cosine_similarity = skor gabungan per sudut; confidence_score = max(skor, 0) × 100 (persen).
 - Re-run untuk PM yang sama: baris `pending_review` lama diganti hasil baru;
   baris `confirmed`/`rejected` tidak disentuh dan tidak dibuat ulang.
 - Konfirmasi satu kandidat TIDAK otomatis me-reject kandidat lain.
@@ -17,13 +18,12 @@ Role akses:
 - Semua role (termasuk Viewer): GET
 """
 
-import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
@@ -31,7 +31,6 @@ from core.database import get_db
 from dependencies.auth import get_current_user, require_role
 from models.audit_log import AuditLog
 from models.dental_image import DentalImage
-from models.embedding import Embedding
 from models.matching_result import MatchingResult
 from models.subject import Subject
 from models.tooth_record import ToothRecord
@@ -54,6 +53,7 @@ from services.dental_comparison import (
     normalize_morphology,
 )
 from services.rag_service_client import RAGServiceError, build_report_payload, rag_service_client
+from services.view_matching import MATCH_METHOD, pm_view_types, run_matching_for_pm
 from schemas.matching_result import (
     MatchingConfirmRequest,
     MatchingResultListResponse,
@@ -85,18 +85,16 @@ def _select_results():
     )
 
 
-def _confidence_from_cosine(similarity: float) -> float:
-    return round(max(similarity, 0.0) * 100, 2)
-
-
 @router.post(
     "/run",
     response_model=MatchingRunResponse,
     summary="Run AM Matching for a PM Subject",
     description=(
-        "Mencocokkan embedding satu subjek post-mortem terhadap seluruh embedding subjek "
-        "ante-mortem aktif (cosine similarity pgvector) dan menyimpan top-k kandidat "
-        "(default 3) ke matching_results. Hanya untuk role admin dan examiner."
+        "Mencocokkan subjek post-mortem dengan seluruh subjek ante-mortem aktif PER SUDUT: "
+        "embedding citra PM sudut X hanya dibandingkan dengan citra AM sudut X (cosine "
+        "pgvector); skor kandidat = rata-rata cosine sudut yang sama. AM tanpa sudut yang "
+        "sama dengan PM tidak ikut. Top-k (default 3) disimpan ke matching_results beserta "
+        "rincian per sudut (view_scores). Hanya untuk role admin dan examiner."
     ),
 )
 async def run_matching(
@@ -128,70 +126,15 @@ async def run_matching(
             detail="Pencocokan hanya dapat dijalankan untuk subjek post-mortem",
         )
 
-    pm_embedding_id = await db.scalar(
-        select(Embedding.id).where(Embedding.subject_id == pm_subject.id)
-    )
-    if not pm_embedding_id:
+    if not await pm_view_types(db, pm_subject.id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Subjek belum diproses AI — belum ada embedding untuk dicocokkan",
         )
 
-    # Similarity search: operator <=> pgvector = cosine distance (1 - cosine similarity)
-    pm_vector = select(Embedding.vector).where(Embedding.subject_id == pm_subject.id).scalar_subquery()
-    distance = Embedding.vector.cosine_distance(pm_vector)
-    ranked = (
-        await db.execute(
-            select(Embedding.subject_id, (1 - distance).label("similarity"))
-            .join(Subject, Subject.id == Embedding.subject_id)
-            .where(Subject.subject_type == "ante_mortem", Subject.is_deleted == False)
-            .order_by(distance, Embedding.subject_id)
-            .limit(payload.top_k)
-        )
-    ).all()
-
-    # Re-run: kandidat lama yang belum direview diganti hasil baru
-    replaced = await db.execute(
-        delete(MatchingResult).where(
-            MatchingResult.pm_subject_id == pm_subject.id,
-            MatchingResult.status == "pending_review",
-        )
-    )
-
-    # Pasangan PM-AM yang sudah diputuskan reviewer tidak dibuat ulang
-    decided: dict[uuid.UUID, uuid.UUID] = {}
-    am_ids = [row.subject_id for row in ranked]
-    if am_ids:
-        decided_rows = await db.execute(
-            select(MatchingResult.am_subject_id, MatchingResult.id)
-            .where(
-                MatchingResult.pm_subject_id == pm_subject.id,
-                MatchingResult.am_subject_id.in_(am_ids),
-                MatchingResult.status != "pending_review",
-            )
-            .order_by(MatchingResult.created_at)
-        )
-        decided = dict(decided_rows.all())
-
-    result_ids: list[uuid.UUID] = []
-    for rank, row in enumerate(ranked, start=1):
-        if row.subject_id in decided:
-            result_ids.append(decided[row.subject_id])
-            continue
-        similarity = float(row.similarity)
-        new_result = MatchingResult(
-            id=uuid.uuid4(),
-            pm_subject_id=pm_subject.id,
-            am_subject_id=row.subject_id,
-            cosine_similarity=similarity,
-            confidence_score=_confidence_from_cosine(similarity),
-            rank=rank,
-            matched_by=current_user.id,
-            status="pending_review",
-        )
-        db.add(new_result)
-        result_ids.append(new_result.id)
-
+    # Pencocokan per sudut: PM sudut X vs AM sudut X (services/view_matching.py)
+    outcome = await run_matching_for_pm(db, pm_subject.id, payload.top_k, current_user.id)
+    result_ids = outcome.result_ids
     await db.commit()
 
     results_by_id = {}
@@ -205,12 +148,17 @@ async def run_matching(
     request.state.audit_details = {
         "top_k": payload.top_k,
         "candidates": len(result_ids),
-        "pending_replaced": replaced.rowcount,
+        "pending_replaced": outcome.pending_replaced,
+        "method": MATCH_METHOD,
+        "pm_views": outcome.pm_views,
+        "am_without_common_view": outcome.am_without_common_view,
     }
 
     return MatchingRunResponse(
         pm_subject_id=pm_subject.id,
         top_k=payload.top_k,
+        pm_views=outcome.pm_views,
+        am_without_common_view=outcome.am_without_common_view,
         candidates=[
             MatchingResultResponse.model_validate(results_by_id[rid])
             for rid in result_ids

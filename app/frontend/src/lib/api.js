@@ -379,8 +379,32 @@ export function toCandidate(r) {
     rank: r.rank,
     status: matchTier(confidence),
     decision: r.status,
+    views: viewBreakdown(r),
   }
 }
+
+/**
+ * Per-angle breakdown of a matching result (backend `match_method: "per_view"`):
+ * PM angle X is compared only with AM angle X; the overall score is the mean.
+ * @returns {{ legacy: boolean, views: { value, label, short, cos, rank }[], compared: number,
+ *   votes: number, disagree: boolean }}  legacy = row computed by the old subject-average method
+ */
+export function viewBreakdown(r) {
+  if (!r?.view_scores) return { legacy: true, views: [], compared: 0, votes: 0, disagree: false }
+  const views = VIEW_TYPES.filter((v) => r.view_scores[v.value]).map((v) => ({
+    value: v.value,
+    label: v.label,
+    short: VIEW_SHORT[v.value],
+    cos: r.view_scores[v.value].cos,
+    rank: r.view_scores[v.value].rank,
+  }))
+  const votes = r.view_votes ?? views.filter((v) => v.rank === 1).length
+  // Angles disagree when this candidate is #1 in some compared angles but not in others
+  const disagree = views.length > 1 && votes > 0 && votes < views.length
+  return { legacy: false, views, compared: r.views_compared ?? views.length, votes, disagree }
+}
+
+export const VIEW_SHORT = { depan: 'D', kiri: 'Ki', kanan: 'Ka' }
 
 // ── Stats (Dashboard) ────────────────────────────────────────────────────
 

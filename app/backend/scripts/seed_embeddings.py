@@ -3,6 +3,12 @@ Dentify Backend — Seed Dummy Embeddings
 Mengisi tabel `embeddings` dengan vektor dummy 512-dim untuk menguji matching
 (similarity search pgvector) selama AI microservice belum bisa dipakai live.
 
+⚠️ USANG sejak pencocokan per sudut (schema_phase6_view_matching.sql, 26 Nov 2026):
+   peringkat kandidat kini memakai `view_embeddings` (1 vektor per citra), bukan tabel
+   `embeddings`, sehingga data dari script ini TIDAK ikut pencocokan. Untuk data uji,
+   jalankan citra lewat AI (mock: scripts/mock_ai_service.py) atau lihat
+   tests/_support.add_view_embeddings.
+
 - Hanya subjek aktif (is_deleted = FALSE) yang diisi.
 - Embedding dari AI asli (model_version selain DUMMY_MODEL_VERSION) TIDAK ditimpa.
 - Vektor AM: acak ternormalisasi L2, deterministik per subject ID (hasil stabil

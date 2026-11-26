@@ -1,6 +1,8 @@
 // Formatting shared by the report page, the tooth comparison table and the PDF export
 // (components/ReportPdf.jsx), so screen, print and downloaded PDF read the same.
-import { VIEW_TYPES } from './api.js'
+import { VIEW_SHORT, VIEW_TYPES } from './api.js'
+
+export { VIEW_SHORT }
 
 export const fmtDate = (v) =>
   v ? new Date(v).toLocaleString('id-ID', { dateStyle: 'long', timeStyle: 'short' }) : '–'
@@ -12,8 +14,6 @@ export const viewLabel = (v) => VIEW_TYPES.find((x) => x.value === v)?.label || 
 export const num = (v, digits = 2, suffix = '') => (v == null ? 'Belum tersedia' : `${Number(v).toFixed(digits)}${suffix}`)
 
 // ── Tooth comparison values ──────────────────────────────────────────────
-export const VIEW_SHORT = { depan: 'D', kiri: 'Ki', kanan: 'Ka' }
-
 export const fmtValue = (v) => {
   if (v == null) return '–'
   if (typeof v === 'number') return Number.isInteger(v) ? String(v) : v.toFixed(2).replace(/\.?0+$/, '')

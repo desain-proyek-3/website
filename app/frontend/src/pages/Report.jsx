@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { AlertTriangle, ArrowLeft, Download, FileText, Loader2, Printer, RotateCcw } from 'lucide-react'
-import { ApiError, generateReportNarrative, getIdentificationReport } from '../lib/api.js'
+import { ApiError, generateReportNarrative, getIdentificationReport, viewBreakdown } from '../lib/api.js'
 import {
   defaultReportFilename,
   fmtDate,
@@ -12,6 +12,7 @@ import {
   viewLabel,
 } from '../lib/reportFormat.js'
 import ToothComparisonTable from '../components/ToothComparisonTable.jsx'
+import ViewScores from '../components/ViewScores.jsx'
 
 function Section({ no, title, children }) {
   return (
@@ -282,6 +283,7 @@ export default function Report() {
   }
 
   const { pm_subject: pm, am_subject: am, scores, decision } = report
+  const matchViews = viewBreakdown(report.comparison.matching_result)
   // Download/print wait for the AI analysis; only an unconfigured RAG service may go without it.
   const printReady = narrative.status === 'available' || narrative.status === 'not_available'
   const printHint = printReady
@@ -408,7 +410,9 @@ export default function Report() {
           <div className="grid gap-4 md:grid-cols-2 print:grid-cols-2">
             <dl>
               <Field label="Confidence">{num(scores.confidence_score, 2, '%')}</Field>
-              <Field label="Cosine similarity">{num(scores.cosine_similarity, 4)}</Field>
+              <Field label={matchViews.legacy ? 'Cosine similarity' : 'Skor gabungan'}>
+                {num(scores.cosine_similarity, 4)}
+              </Field>
               <Field label="Peringkat kandidat">{scores.rank ? `#${scores.rank}` : '–'}</Field>
               <Field label="Superimposition">{num(scores.superimposition_score)}</Field>
               <Field label="Selisih morfologi">{num(scores.morphology_diff_score)}</Field>
@@ -422,6 +426,10 @@ export default function Report() {
               <Field label="Pencocokan oleh">{person(decision.matched_by)}</Field>
               <Field label="Waktu pencocokan">{fmtDate(decision.matched_at)}</Field>
             </dl>
+          </div>
+          <div className="mt-4">
+            <div className="readout mb-2">SKOR PER SUDUT (PM vs AM SUDUT YANG SAMA)</div>
+            <ViewScores views={matchViews} />
           </div>
         </Section>
 

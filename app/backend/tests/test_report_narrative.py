@@ -26,8 +26,10 @@ from models.audit_log import AuditLog
 from models.embedding import Embedding
 from models.matching_result import MatchingResult
 from models.tooth_record import ToothRecord
+from models.view_embedding import ViewEmbedding
 from tests._support import (
     MOCK_AI_URL,
+    add_view_embeddings,
     create_subject,
     create_user,
     deactivate_user,
@@ -80,6 +82,8 @@ class TestReportNarrative(unittest.TestCase):
         cls.img = {
             "pm_depan": upload_image(cls.admin, cls.pm, "depan"),
             "am_kanan": upload_image(cls.admin, cls.am, "kanan"),
+            # Tanpa data gigi; hanya agar AM punya sudut yang sama dengan PM (pencocokan per sudut)
+            "am_depan": upload_image(cls.admin, cls.am, "depan"),
         }
         teeth = {
             "pm_depan": [(11, 0.90, {"restoration": 1}), (21, 0.88, {"diastema": 0})],
@@ -96,6 +100,10 @@ class TestReportNarrative(unittest.TestCase):
                     ))
             for sid in cls.subjects:
                 session.add(Embedding(subject_id=UUID(sid), vector=vec, model_version=TEST_MODEL_VERSION))
+            add_view_embeddings(session, [
+                (cls.pm if key.startswith("pm") else cls.am, img, key.split("_")[1], vec)
+                for key, img in cls.img.items()
+            ], TEST_MODEL_VERSION)
         run_db(seed)
 
         status, res = make_request(
@@ -118,6 +126,7 @@ class TestReportNarrative(unittest.TestCase):
                 or_(MatchingResult.pm_subject_id.in_(ids), MatchingResult.am_subject_id.in_(ids))
             ))
             await session.execute(delete(Embedding).where(Embedding.subject_id.in_(ids)))
+            await session.execute(delete(ViewEmbedding).where(ViewEmbedding.subject_id.in_(ids)))
             await session.execute(delete(ToothRecord).where(ToothRecord.dental_image_id.in_(image_ids)))
         run_db(cleanup)
         for sid in cls.subjects:

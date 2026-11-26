@@ -6,6 +6,10 @@ sedangkan tabel `embeddings` menyimpan 1 vektor per subjek untuk matching (pgvec
 Vektor subjek = rata-rata elemen-per-elemen dari embedding terbaru tiap citra aktif
 subjek tersebut, lalu dinormalisasi L2 (cosine similarity tetap bermakna).
 
+Sekaligus menyinkronkan `view_embeddings` (1 vektor per citra/sudut) yang dipakai
+pencocokan per sudut (services/view_matching.py) — vektor rata-rata subjek di tabel
+`embeddings` tetap disimpan, tetapi tidak lagi dipakai untuk peringkat kandidat.
+
 Dihitung ulang setiap kali:
 - job inferensi sebuah citra selesai (`api/v1/inference.py`)
 - citra di-soft-delete (`api/v1/dental_images.py`) — embedding citra itu tidak dipakai lagi
@@ -28,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.dental_image import DentalImage
 from models.embedding import Embedding
 from models.inference_job import InferenceJob
+from models.view_embedding import ViewEmbedding
 from services.inference_status import applied_job_condition
 
 EMBEDDING_DIM = 512
@@ -74,6 +79,7 @@ async def recompute_subject_embedding(session: AsyncSession, subject_id: UUID, n
     latest_per_image = (
         select(
             InferenceJob.dental_image_id,
+            DentalImage.view_type,
             InferenceJob.result_payload["subject_embedding"].label("vector"),
             InferenceJob.result_payload["subject_embedding_model"].astext.label("model"),
         )
@@ -89,7 +95,10 @@ async def recompute_subject_embedding(session: AsyncSession, subject_id: UUID, n
         .order_by(InferenceJob.dental_image_id, InferenceJob.completed_at.desc().nulls_last())
     )
     rows = (await session.execute(latest_per_image)).all()
-    valid = [(r.vector, r.model) for r in rows if is_valid_vector(r.vector)]
+    valid_rows = [r for r in rows if is_valid_vector(r.vector)]
+    valid = [(r.vector, r.model) for r in valid_rows]
+
+    await _sync_view_embeddings(session, subject_id, valid_rows, now)
 
     existing = await session.scalar(select(Embedding).where(Embedding.subject_id == subject_id))
     vector = mean_embedding([v for v, _ in valid])
@@ -109,3 +118,32 @@ async def recompute_subject_embedding(session: AsyncSession, subject_id: UUID, n
     created = Embedding(subject_id=subject_id, vector=vector, model_version=label, generated_at=now)
     session.add(created)
     return created
+
+
+async def _sync_view_embeddings(session: AsyncSession, subject_id: UUID, rows: Sequence[Any], now: datetime) -> None:
+    """
+    Samakan `view_embeddings` subjek dengan embedding terbaru tiap citra aktif (`rows` dari
+    recompute_subject_embedding): tambah/perbarui yang ada, hapus milik citra yang sudah
+    dihapus atau tidak lagi punya hasil AI yang berlaku. Dipakai pencocokan per sudut.
+    """
+    by_image = {r.dental_image_id: r for r in rows}
+    existing = {
+        ve.dental_image_id: ve
+        for ve in (await session.scalars(select(ViewEmbedding).where(ViewEmbedding.subject_id == subject_id)))
+    }
+    for image_id, ve in existing.items():
+        if image_id not in by_image:
+            await session.delete(ve)
+    for image_id, r in by_image.items():
+        model = (r.model or DEFAULT_MODEL_NAME)[:MODEL_VERSION_MAX_LEN]
+        ve = existing.get(image_id)
+        if ve is None:
+            session.add(ViewEmbedding(
+                dental_image_id=image_id, subject_id=subject_id, view_type=r.view_type,
+                vector=r.vector, model_version=model, generated_at=now,
+            ))
+        else:
+            ve.view_type = r.view_type
+            ve.vector = r.vector
+            ve.model_version = model
+            ve.generated_at = now

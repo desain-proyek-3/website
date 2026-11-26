@@ -15,6 +15,7 @@ import {
   UserPlus,
 } from 'lucide-react'
 import DentalUploadPanel from '../components/DentalUploadPanel.jsx'
+import { ViewRankChips } from '../components/ViewScores.jsx'
 import { MATCH_TIER_NOTE, VIEW_TYPES, createSubject, runMatching, toCandidate } from '../lib/api.js'
 import { DEFAULT_NO_ACCESS_MSG, useDentalUpload } from '../lib/useDentalUpload.js'
 import { CASE } from '../lib/data.js'
@@ -50,22 +51,23 @@ export default function Identify() {
 
   // ── AM candidate matching ──
   // state: idle | loading | done | no-embedding | error
-  const [matching, setMatching] = useState({ state: 'idle', candidates: [], message: '' })
+  const [matching, setMatching] = useState({ state: 'idle', candidates: [], pmViews: [], message: '' })
   const matchSeq = useRef(0) // ignore responses that arrive after the subject changed
 
   const findCandidates = useCallback(async (pmSubjectId) => {
     const seq = ++matchSeq.current
-    setMatching({ state: 'loading', candidates: [], message: '' })
+    setMatching({ state: 'loading', candidates: [], pmViews: [], message: '' })
     try {
-      const { candidates } = await runMatching(pmSubjectId)
+      const { candidates, pm_views: pmViews = [] } = await runMatching(pmSubjectId)
       const list = candidates.map(toCandidate)
-      if (seq === matchSeq.current) setMatching({ state: 'done', candidates: list, message: '' })
+      if (seq === matchSeq.current) setMatching({ state: 'done', candidates: list, pmViews, message: '' })
       return list
     } catch (err) {
       if (seq === matchSeq.current) {
         setMatching({
           state: err.status === 409 ? 'no-embedding' : 'error',
           candidates: [],
+          pmViews: [],
           message: err.status === 403 ? DEFAULT_NO_ACCESS_MSG : err.message,
         })
       }
@@ -75,7 +77,7 @@ export default function Identify() {
 
   useEffect(() => {
     matchSeq.current++
-    setMatching({ state: 'idle', candidates: [], message: '' })
+    setMatching({ state: 'idle', candidates: [], pmViews: [], message: '' })
   }, [subject?.id])
 
   // ── Upload + inference (shared with SubjectData) ──
@@ -330,8 +332,9 @@ export default function Identify() {
                     )}
                   </div>
                   <p className="mt-1 text-[11.5px] text-slate-400">
-                    3 subjek AM dengan kemiripan embedding tertinggi (cosine similarity). Hasil tersimpan untuk
-                    ditinjau di Forensic Review — keputusan akhir tetap oleh odontolog.
+                    3 subjek AM dengan skor tertinggi. Citra PM tiap sudut hanya dibandingkan dengan citra AM
+                    sudut yang sama (D = depan, Ki = kiri, Ka = kanan; #n = peringkat di sudut itu), skor = rata-rata
+                    sudut. Hasil tersimpan untuk ditinjau di Forensic Review — keputusan akhir tetap oleh odontolog.
                   </p>
 
                   {matching.state === 'idle' && (
@@ -370,6 +373,15 @@ export default function Identify() {
                     </p>
                   )}
 
+                  {matching.state === 'done' && candidates.length > 0 && matching.pmViews.length < VIEW_TYPES.length && (
+                    <p className="mt-2.5 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-[12.5px] text-amber-900">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                      Hasil sementara — baru {matching.pmViews.length} dari {VIEW_TYPES.length} sudut PM yang diproses AI
+                      ({matching.pmViews.map((v) => VIEW_TYPES.find((t) => t.value === v)?.label || v).join(', ')}).
+                      Peringkat diperbarui otomatis setelah sudut berikutnya selesai diproses.
+                    </p>
+                  )}
+
                   {matching.state === 'done' && candidates.length > 0 && (
                     <ul className="mt-2.5 space-y-2.5">
                       {candidates.map((c) => {
@@ -389,6 +401,7 @@ export default function Identify() {
                                 <p className="mt-1 max-w-[46ch] text-[12.5px] leading-snug text-slate-500">
                                   {MATCH_TIER_NOTE[c.status]}
                                 </p>
+                                <ViewRankChips views={c.views} className="mt-1.5" />
                                 {DECISION_LABEL[c.decision] && (
                                   <p className="mt-1.5 text-[11.5px] font-semibold text-slate-600">
                                     {DECISION_LABEL[c.decision]} oleh odontolog

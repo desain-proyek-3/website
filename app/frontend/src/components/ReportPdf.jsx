@@ -3,7 +3,7 @@
 // Real text (selectable/searchable, SHA-256 hashes copyable), not a screenshot.
 // Loaded lazily — import() this module only when the user downloads.
 import { Document, Font, Image, Page, StyleSheet, Text, View, pdf } from '@react-pdf/renderer'
-import { TOOTH_STATUS } from '../lib/api.js'
+import { TOOTH_STATUS, VIEW_TYPES, viewBreakdown } from '../lib/api.js'
 import {
   VIEW_SHORT,
   featureLine,
@@ -115,6 +115,50 @@ function SubjectBox({ title, subject }) {
         <Field label="Dicatat">{`${fmtDate(subject.created_at)} · ${person(subject.created_by)}`}</Field>
         <Field label="Catatan">{subject.notes}</Field>
       </View>
+    </View>
+  )
+}
+
+/** Section 2: per-angle scores (PM angle X vs AM angle X), same content as components/ViewScores.jsx. */
+function ViewScoresPdf({ views }) {
+  if (views.legacy) {
+    return (
+      <Text style={[s.note, { marginTop: 6 }]}>
+        Dihitung dengan metode lama (rata-rata embedding seluruh sudut); rincian per sudut tidak tersedia.
+      </Text>
+    )
+  }
+  const byView = Object.fromEntries(views.views.map((v) => [v.value, v]))
+  return (
+    <View style={{ marginTop: 8 }} wrap={false}>
+      <Text style={[s.readout, { marginBottom: 4 }]}>SKOR PER SUDUT (PM vs AM SUDUT YANG SAMA)</Text>
+      <View style={s.cols}>
+        {VIEW_TYPES.map((t) => {
+          const v = byView[t.value]
+          return (
+            <View key={t.value} style={[s.box, { padding: 6 }]}>
+              <Text style={{ color: C.muted, fontSize: 7.5 }}>{t.label}</Text>
+              {v ? (
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 2 }}>
+                  <Text style={{ fontWeight: 700 }}>{v.cos.toFixed(4)}</Text>
+                  <Text style={{ color: v.rank === 1 ? C.teal : C.muted, fontWeight: 700 }}>#{v.rank}</Text>
+                </View>
+              ) : (
+                <Text style={{ color: C.faint, marginTop: 2 }}>tidak dibandingkan</Text>
+              )}
+            </View>
+          )
+        })}
+      </View>
+      <Text style={[s.note, { color: C.muted }]}>
+        {`${views.compared}/${VIEW_TYPES.length} sudut dibandingkan · peringkat #1 di ${views.votes} dari ${views.compared} sudut. ` +
+          'Skor gabungan = rata-rata cosine sudut yang dibandingkan.'}
+      </Text>
+      {views.disagree && (
+        <View style={s.warnBox}>
+          <Text>⚠ Sudut tidak sepakat: kandidat ini bukan peringkat #1 di semua sudut.</Text>
+        </View>
+      )}
     </View>
   )
 }
@@ -269,6 +313,7 @@ function CustodyTable({ images, subjectLabel }) {
 
 function ReportDocument({ report, narrative, downloadedAt }) {
   const { pm_subject: pm, am_subject: am, scores, decision } = report
+  const matchViews = viewBreakdown(report.comparison.matching_result)
   const subjectLabel = (sid) => (sid === pm.id ? 'PM' : 'AM')
   const images = [...report.images].sort(
     (a, b) => subjectLabel(b.subject_id).localeCompare(subjectLabel(a.subject_id)) || a.view_type.localeCompare(b.view_type),
@@ -325,7 +370,7 @@ function ReportDocument({ report, narrative, downloadedAt }) {
           <View style={s.cols}>
             <View style={s.col}>
               <Field label="Confidence">{num(scores.confidence_score, 2, '%')}</Field>
-              <Field label="Cosine similarity">{num(scores.cosine_similarity, 4)}</Field>
+              <Field label={matchViews.legacy ? 'Cosine similarity' : 'Skor gabungan'}>{num(scores.cosine_similarity, 4)}</Field>
               <Field label="Peringkat kandidat">{scores.rank ? `#${scores.rank}` : '–'}</Field>
               <Field label="Superimposition">{num(scores.superimposition_score)}</Field>
               <Field label="Selisih morfologi">{num(scores.morphology_diff_score)}</Field>
@@ -340,6 +385,7 @@ function ReportDocument({ report, narrative, downloadedAt }) {
               <Field label="Waktu pencocokan">{fmtDate(decision.matched_at)}</Field>
             </View>
           </View>
+          <ViewScoresPdf views={matchViews} />
         </Section>
 
         <Section no={3} title="Perbandingan gigi (FDI) PM vs AM">

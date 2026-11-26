@@ -8,6 +8,7 @@ from models.subject import Subject
 from models.dental_image import DentalImage
 from models.tooth_record import ToothRecord
 from models.embedding import Embedding
+from models.view_embedding import ViewEmbedding
 from models.matching_result import MatchingResult
 from models.audit_log import AuditLog
 from models.inference_job import InferenceJob
@@ -21,6 +22,7 @@ __all__ = [
     "DentalImage",
     "ToothRecord",
     "Embedding",
+    "ViewEmbedding",
     "MatchingResult",
     "AuditLog",
     "InferenceJob",

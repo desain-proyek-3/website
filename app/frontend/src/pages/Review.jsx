@@ -30,7 +30,9 @@ import {
   listMatchingResults,
   listSubjectImages,
   matchTier,
+  viewBreakdown,
 } from '../lib/api.js'
+import ViewScores, { ViewRankChips } from '../components/ViewScores.jsx'
 
 // Backend roles allowed to confirm/reject a match (POST /matching-results/{id}/confirm).
 const DECIDE_ROLES = ['admin', 'examiner']
@@ -115,6 +117,7 @@ function QueueItem({ r, isActive, onClick }) {
             AM {shortId(r.am_subject_id)}
             {r.am_subject?.case_reference && ` · ${r.am_subject.case_reference}`}
           </span>
+          <ViewRankChips views={viewBreakdown(r)} className="mt-1" />
         </span>
 
         <span className={`chip shrink-0 text-[10px] font-semibold tracking-wider ${chip.cls}`}>{chip.word}</span>
@@ -282,6 +285,7 @@ export default function Review() {
 
   const confidence = active ? confidenceOf(active) : 0
   const tone = TONES[matchTier(confidence)]
+  const activeViews = viewBreakdown(active)
 
   return (
     <div className="space-y-6">
@@ -300,7 +304,8 @@ export default function Review() {
           </div>
           <p className="mt-1 text-[13px] text-slate-400">
             {matches ? `${matches.pending_review} kandidat menunggu validasi.` : 'Memuat ringkasan…'} Skor berasal
-            dari kemiripan embedding citra intraoral (cosine similarity); keputusan akhir oleh odontolog.
+            dari kemiripan embedding citra intraoral per sudut (depan, kiri, kanan dibandingkan dengan sudut yang
+            sama); keputusan akhir oleh odontolog.
           </p>
         </div>
 
@@ -433,11 +438,14 @@ export default function Review() {
                       <Cpu className="h-4 w-4 text-teal-700" />
                       <span className="text-[12.5px] font-bold text-ink">Rincian Skor Pencocokan</span>
                     </div>
-                    <span className="font-mono text-[10.5px] text-slate-400">PGVECTOR · COSINE</span>
+                    <span className="font-mono text-[10.5px] text-slate-400">PGVECTOR · COSINE PER SUDUT</span>
                   </div>
                   <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2.5 text-[12.5px] sm:grid-cols-4">
                     {[
-                      ['Cosine similarity', active.cosine_similarity == null ? '–' : active.cosine_similarity.toFixed(4)],
+                      [
+                        activeViews.legacy ? 'Cosine similarity' : 'Skor gabungan',
+                        active.cosine_similarity == null ? '–' : active.cosine_similarity.toFixed(4),
+                      ],
                       ['Peringkat 1:N', `#${active.rank ?? '–'}`],
                       ['Superimposition', active.superimposition_score ?? 'Belum tersedia'],
                       ['Selisih morfologi', active.morphology_diff_score ?? 'Belum tersedia'],
@@ -448,8 +456,14 @@ export default function Review() {
                       </div>
                     ))}
                   </dl>
+                  <div className="mt-4 border-t border-slate-200 pt-3">
+                    <div className="mb-2 font-mono text-[10.5px] tracking-[.12em] text-slate-500">SKOR PER SUDUT (PM vs AM SUDUT YANG SAMA)</div>
+                    <ViewScores views={activeViews} />
+                  </div>
                   <p className="mt-3 text-[11.5px] text-slate-400">
-                    Skor superimposition & morfologi menunggu output layanan AI; confidence = cosine × 100.
+                    Citra PM tiap sudut hanya dibandingkan dengan citra AM sudut yang sama; skor gabungan = rata-rata
+                    cosine sudut yang dibandingkan, confidence = skor gabungan × 100. Skor superimposition & morfologi
+                    menunggu output layanan AI.
                   </p>
                 </div>
 

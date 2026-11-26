@@ -150,6 +150,23 @@ def run_db(operation):
     return asyncio.run(runner())
 
 
+def add_view_embeddings(session, entries, model_version: str) -> None:
+    """
+    Tambahkan embedding per sudut uji (pencocokan per sudut memakai `view_embeddings`).
+    entries: iterable (subject_id, image dict hasil upload_image, view_type, vector).
+    Dipakai di dalam operasi run_db; hapus lagi lewat delete(ViewEmbedding) per subject_id.
+    """
+    from uuid import UUID
+
+    from models.view_embedding import ViewEmbedding
+
+    for subject_id, image, view_type, vector in entries:
+        session.add(ViewEmbedding(
+            dental_image_id=UUID(image["id"]), subject_id=UUID(subject_id), view_type=view_type,
+            vector=vector, model_version=model_version,
+        ))
+
+
 def wait_until(predicate, timeout: float = 30.0, interval: float = 0.3):
     """Ulangi predicate() sampai mengembalikan nilai truthy; kembalikan nilai itu (None bila timeout)."""
     deadline = time.monotonic() + timeout

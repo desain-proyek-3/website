@@ -1,7 +1,8 @@
 """
 Dentify Tests — Matching Results & Stats API Integration Tests
-Menguji pencocokan AM vs PM (pgvector cosine similarity) terhadap server live
-(127.0.0.1:8000). Embedding uji ditulis langsung ke DB (AI service tidak dipakai):
+Menguji pencocokan AM vs PM per sudut (pgvector cosine similarity) terhadap server live
+(127.0.0.1:8000). Citra uji diunggah, embedding per sudut ditulis langsung ke DB (AI
+service tidak dipakai); skenario khusus per sudut ada di tests/test_view_matching.py:
 1. Run matching → kandidat AM terurut, PM "dekat" AM target di rank 1, AM soft-deleted
    tidak ikut, top_k default 3, confidence = cosine × 100
 2. Re-run → baris pending_review lama diganti, tidak menumpuk
@@ -41,9 +42,12 @@ import models  # noqa: F401 — registrasi seluruh relasi ORM
 from core.database import async_session_factory, engine
 from models.embedding import Embedding
 from models.matching_result import MatchingResult
+from models.view_embedding import ViewEmbedding
+from tests._support import add_view_embeddings, upload_image
 
 BASE_URL = os.environ.get("DENTIFY_TEST_BASE_URL", "http://127.0.0.1:8000")
 TEST_MODEL_VERSION = "test_matching"
+VIEWS = ("depan", "kiri", "kanan")
 
 
 def make_request(
@@ -170,11 +174,18 @@ class TestMatchingResults(unittest.TestCase):
             cls.pm: pm_vec,
         }
 
+        # Pencocokan per sudut: tiap subjek punya citra depan/kiri/kanan dengan vektor yang
+        # sama, sehingga skor gabungan = cosine di atas (rincian per sudut identik)
+        images = {sid: {v: upload_image(cls.admin, sid, v) for v in VIEWS} for sid in vectors}
+
         async def insert_embeddings(session):
             for subject_id, vec in vectors.items():
                 session.add(
                     Embedding(subject_id=UUID(subject_id), vector=vec, model_version=TEST_MODEL_VERSION)
                 )
+            add_view_embeddings(session, [
+                (sid, img, view, vectors[sid]) for sid, by_view in images.items() for view, img in by_view.items()
+            ], TEST_MODEL_VERSION)
         run_db(insert_embeddings)
 
         status, res = make_request(f"/api/v1/subjects/{cls.am_deleted}", method="DELETE", token=cls.admin)
@@ -194,6 +205,7 @@ class TestMatchingResults(unittest.TestCase):
                 )
             )
             await session.execute(delete(Embedding).where(Embedding.subject_id.in_(subject_ids)))
+            await session.execute(delete(ViewEmbedding).where(ViewEmbedding.subject_id.in_(subject_ids)))
         run_db(cleanup)
 
         for subject_id in cls.subjects:
@@ -225,6 +237,7 @@ class TestMatchingResults(unittest.TestCase):
         status, res = self.run_matching(self.pm)
         self.assertEqual(status, 200, res)
         self.assertEqual(res["top_k"], 3)
+        self.assertEqual(res["pm_views"], list(VIEWS))
         candidates = res["candidates"]
         self.assertEqual(len(candidates), 3)
 
@@ -237,6 +250,14 @@ class TestMatchingResults(unittest.TestCase):
         self.assertEqual(top["am_subject"]["subject_type"], "ante_mortem")
         self.assertAlmostEqual(top["cosine_similarity"], self.expected_cosine, places=3)
         self.assertAlmostEqual(top["confidence_score"], round(self.expected_cosine * 100, 2), places=1)
+        # Rincian per sudut: 3 sudut dibandingkan, target peringkat 1 di setiap sudut
+        self.assertEqual(top["match_method"], "per_view")
+        self.assertEqual(top["views_compared"], 3)
+        self.assertEqual(set(top["view_scores"]), set(VIEWS))
+        for view in VIEWS:
+            self.assertEqual(top["view_scores"][view]["rank"], 1)
+            self.assertAlmostEqual(top["view_scores"][view]["cos"], self.expected_cosine, places=4)
+        self.assertEqual(top["view_votes"], 3)
 
         am_ids = [c["am_subject_id"] for c in candidates]
         self.assertNotIn(self.am_deleted, am_ids)
