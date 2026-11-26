@@ -13,7 +13,7 @@ langsung ke DB dengan morfologi yang dirancang, sehingga hasil perbandingan dike
 1. GET /comparison: status per gigi, agregasi sudut, delta, ringkasan, cakupan citra
 2. GET /comparison: akses semua role, 404, 401
 3. GET /report: 409 sebelum dikonfirmasi; setelah confirm → isi laporan lengkap
-   (keputusan + reviewer dari audit, chain-of-custody citra, narasi RAG not_available)
+   (keputusan + reviewer dari audit, chain-of-custody citra, narasi RAG belum dibuat)
 4. GET /report untuk kandidat yang ditolak → 409
 
 Jalankan dari app/backend/:  python -m unittest tests.test_comparison_report -v
@@ -178,7 +178,8 @@ class TestComparisonAndReport(unittest.TestCase):
         self.assertEqual(report["scores"]["rank"], 1)
         self.assertAlmostEqual(report["scores"]["confidence_score"], 100.0, places=1)
         self.assertEqual(report["comparison"]["summary"]["discrepant"], 2)
-        self.assertEqual(report["narrative"]["status"], "not_available")
+        # Narasi tidak dibuat oleh GET /report (lihat test_report_narrative)
+        self.assertIn(report["narrative"]["status"], {"pending", "not_available"})
         self.assertIsNone(report["narrative"]["content"])
         self.assertEqual(report["generated_by"]["full_name"] is not None, True)
 

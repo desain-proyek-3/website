@@ -479,6 +479,27 @@ export function getIdentificationReport(matchingResultId) {
   return apiFetch(`/api/v1/matching-results/${matchingResultId}/report`)
 }
 
+/**
+ * Section 4 "Analisis AI": ask the backend to generate (or return the already stored)
+ * RAG narrative. Can take minutes; 502/504 = generation failed and may be retried.
+ * @returns {Promise<{ status: 'available'|'not_available', content, references, engine,
+ *   warnings, model_version, generated_at, message }>}
+ */
+export async function generateReportNarrative(matchingResultId, { signal } = {}) {
+  try {
+    return await apiFetch(`/api/v1/matching-results/${matchingResultId}/report/narrative`, {
+      method: 'POST',
+      signal,
+    })
+  } catch (err) {
+    // A gateway timeout from nginx has an HTML body → replace the generic English message.
+    if (err instanceof ApiError && err.status === 504 && !/analisis AI/i.test(err.message)) {
+      throw new ApiError('Layanan analisis AI tidak merespons tepat waktu.', 504)
+    }
+    throw err
+  }
+}
+
 export const TOOTH_STATUS = {
   consistent: { label: 'Konsisten', cls: 'bg-teal-50 text-teal-700 ring-teal-200' },
   discrepant: { label: 'Berbeda', cls: 'bg-amber-50 text-amber-700 ring-amber-200' },

@@ -23,7 +23,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
@@ -42,6 +42,7 @@ from schemas.dental_comparison import (
     ImageCoverage,
     ReportDecision,
     ReportImage,
+    ReportNarrative,
     ReportPerson,
     ReportSubject,
     SubjectCoverage,
@@ -52,7 +53,7 @@ from services.dental_comparison import (
     normalize_confidence,
     normalize_morphology,
 )
-from services.rag_service_client import rag_service_client
+from services.rag_service_client import RAGServiceError, build_report_payload, rag_service_client
 from schemas.matching_result import (
     MatchingConfirmRequest,
     MatchingResultListResponse,
@@ -402,6 +403,39 @@ def _person(user: User | None) -> ReportPerson | None:
     return ReportPerson(id=user.id, username=user.username, full_name=user.full_name)
 
 
+def _ensure_confirmed(result: MatchingResult) -> None:
+    if result.status != "confirmed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Laporan identifikasi hanya tersedia untuk pasangan yang sudah dikonfirmasi "
+                f"odontolog (status saat ini: {result.status})"
+            ),
+        )
+
+
+def _report_scores(result: MatchingResult, comparison: DentalComparisonResponse) -> dict:
+    return {
+        "cosine_similarity": result.cosine_similarity,
+        "confidence_score": comparison.matching_result.confidence_score,
+        "rank": result.rank,
+        "superimposition_score": result.superimposition_score,
+        "morphology_diff_score": result.morphology_diff_score,
+    }
+
+
+def _narrative_from_stored(stored: dict | None, generated_at: datetime | None) -> ReportNarrative:
+    """Status Bagian 4 laporan dari narasi tersimpan (tanpa memanggil layanan RAG)."""
+    if stored:
+        return ReportNarrative(status="available", generated_at=generated_at, **stored)
+    if not rag_service_client.configured:
+        return ReportNarrative(
+            status="not_available",
+            message="Analisis AI tidak tersedia — layanan analisis AI belum dikonfigurasi.",
+        )
+    return ReportNarrative(status="pending")
+
+
 @router.get(
     "/{id}/report",
     response_model=IdentificationReportResponse,
@@ -410,8 +444,10 @@ def _person(user: User | None) -> ReportPerson | None:
         "Laporan identifikasi format INTERPOL DVI untuk pasangan PM–AM yang sudah "
         "DIKONFIRMASI odontolog (status lain → 409): identitas subjek, skor pencocokan, "
         "keputusan reviewer, perbandingan gigi, chain-of-custody citra (SHA-256), dan "
-        "narasi Agentic RAG (status 'not_available' selama layanan RAG belum terhubung). "
-        "Dibuat ulang setiap diminta (belum disimpan). Dapat diakses semua role."
+        "Analisis AI (narasi Agentic RAG). Narasi TIDAK dibuat di sini agar laporan tampil "
+        "cepat: status 'available' bila sudah tersimpan, 'pending' bila belum (frontend lalu "
+        "memanggil POST /{id}/report/narrative), 'not_available' bila layanan RAG tidak "
+        "dikonfigurasi. Data lain disusun ulang setiap diminta. Dapat diakses semua role."
     ),
 )
 async def get_identification_report(
@@ -421,14 +457,7 @@ async def get_identification_report(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> IdentificationReportResponse:
     result = await _get_active_result(db, id)
-    if result.status != "confirmed":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "Laporan identifikasi hanya tersedia untuk pasangan yang sudah dikonfirmasi "
-                f"odontolog (status saat ini: {result.status})"
-            ),
-        )
+    _ensure_confirmed(result)
 
     comparison, images, teeth_per_image = await _build_comparison(db, result)
     pm, am = result.pm_subject, result.am_subject
@@ -484,26 +513,8 @@ async def get_identification_report(
             created_by=_person(users.get(s.created_by)),
         )
 
-    scores = {
-        "cosine_similarity": result.cosine_similarity,
-        "confidence_score": comparison.matching_result.confidence_score,
-        "rank": result.rank,
-        "superimposition_score": result.superimposition_score,
-        "morphology_diff_score": result.morphology_diff_score,
-    }
-
-    narrative = await rag_service_client.generate_narrative(
-        {
-            "matching_result_id": str(result.id),
-            "pm_subject": subject_section(pm).model_dump(mode="json"),
-            "am_subject": subject_section(am).model_dump(mode="json"),
-            "scores": scores,
-            "comparison": {
-                "summary": comparison.summary.model_dump(mode="json"),
-                "teeth": [t.model_dump(mode="json") for t in comparison.teeth],
-            },
-        }
-    )
+    scores = _report_scores(result, comparison)
+    narrative = _narrative_from_stored(result.report_narrative, result.report_narrative_at)
 
     request.state.audit_action = "GENERATE_REPORT"
     request.state.resource_type = "matching_results"
@@ -542,6 +553,89 @@ async def get_identification_report(
         ],
         narrative=narrative,
     )
+
+
+@router.post(
+    "/{id}/report/narrative",
+    response_model=ReportNarrative,
+    summary="Generate AI Analysis (RAG Narrative) for an Identification Report",
+    description=(
+        "Membuat Bagian 4 'Analisis AI' laporan lewat layanan Agentic RAG lalu menyimpannya, "
+        "sehingga laporan berikutnya (dan PDF cetak) memakai narasi yang sama. Bila narasi sudah "
+        "tersimpan, dikembalikan tanpa memanggil layanan (idempoten). Hanya hasil sukses yang "
+        "disimpan; kegagalan → 502 (504 bila timeout) dan boleh dicoba lagi. Layanan tidak "
+        "dikonfigurasi → 200 status 'not_available'. Pasangan harus 'confirmed' (409). "
+        "Dapat diakses semua role (narasi dibutuhkan untuk mencetak laporan)."
+    ),
+)
+async def generate_report_narrative(
+    id: UUID,
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ReportNarrative:
+    result = await _get_active_result(db, id)
+    _ensure_confirmed(result)
+
+    request.state.audit_action = "GENERATE_REPORT_NARRATIVE"
+    request.state.resource_type = "matching_results"
+    request.state.resource_id = result.id
+
+    if result.report_narrative or not rag_service_client.configured:
+        narrative = _narrative_from_stored(result.report_narrative, result.report_narrative_at)
+        request.state.audit_details = {"narrative": narrative.status, "cached": narrative.status == "available"}
+        return narrative
+
+    comparison, _, _ = await _build_comparison(db, result)
+    payload = build_report_payload(
+        str(result.id),
+        result.pm_subject,
+        result.am_subject,
+        _report_scores(result, comparison),
+        comparison.summary,
+        comparison.teeth,
+    )
+    # Panggilan RAG bisa sampai RAG_SERVICE_TIMEOUT_SECONDS → akhiri transaksi baca dulu
+    # agar koneksi DB tidak ditahan (idle in transaction) selama menunggu.
+    await db.commit()
+
+    try:
+        stored = await rag_service_client.generate_narrative(payload)
+    except RAGServiceError as e:
+        request.state.audit_details = {"narrative": "failed", "timeout": e.timeout}
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT if e.timeout else status.HTTP_502_BAD_GATEWAY,
+            detail=e.message,
+        ) from e
+
+    # Simpan hanya bila belum ada: dua pengguna yang membuka laporan bersamaan → hasil
+    # pertama yang dipakai, agar semua cetakan laporan berisi narasi yang sama.
+    row = (
+        await db.execute(
+            update(MatchingResult)
+            .where(MatchingResult.id == result.id, MatchingResult.report_narrative.is_(None))
+            .values(report_narrative=stored, report_narrative_at=func.now())
+            .returning(MatchingResult.report_narrative, MatchingResult.report_narrative_at)
+        )
+    ).one_or_none()
+    saved = row is not None
+    if not saved:
+        row = (
+            await db.execute(
+                select(MatchingResult.report_narrative, MatchingResult.report_narrative_at)
+                .where(MatchingResult.id == result.id)
+            )
+        ).one()
+
+    narrative = _narrative_from_stored(row.report_narrative, row.report_narrative_at)
+    request.state.audit_details = {
+        "narrative": narrative.status,
+        "cached": not saved,
+        "engine": narrative.engine,
+        "model_version": narrative.model_version,
+        "references": len(narrative.references),
+    }
+    return narrative
 
 
 @router.post(

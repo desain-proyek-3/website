@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     # Kosong = belum dikonfigurasi → laporan dibuat tanpa bagian narasi RAG.
     RAG_SERVICE_BASE_URL: str = ""
     RAG_SERVICE_API_KEY: str = ""
-    RAG_SERVICE_TIMEOUT_SECONDS: float = 90.0
+    RAG_SERVICE_TIMEOUT_SECONDS: float = 180.0  # nginx proxy_read_timeout /api/ harus > nilai ini
 
     # ── JWT (placeholder — diimplementasi di task berikutnya) ──────
     JWT_SECRET_KEY: str = "CHANGE_ME_IN_PRODUCTION"

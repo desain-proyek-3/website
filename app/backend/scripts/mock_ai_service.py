@@ -25,6 +25,14 @@ Perilaku:
 - MOCK_AI_FAIL_RATE (default 0)      : peluang job gagal (uji jalur failed), 0..1
 - Header X-API-Key tidak divalidasi (dev).
 
+Agentic RAG (Bagian 4 "Analisis AI" laporan; kontrak di services/rag_service_client.py):
+    POST /api/v1/reports → {"content", "references"[{n, source, page, section, score}],
+                            "engine": "llm", "warnings", "model_version"}
+    Narasi deterministik dari ringkasan perbandingan. MOCK_RAG_DELAY_SECONDS (default 1).
+    Kontrol untuk test (KHUSUS MOCK, tidak ada di layanan asli):
+    POST /mock/reports/next  {"mode": "error"|"no_llm"|"empty"}  → panggilan berikutnya gagal
+    GET  /mock/reports/{matching_result_id} → {"calls", "last_payload"}
+
 Jalankan dari app/backend/ (terminal terpisah dari backend):
     venv/Scripts/python.exe scripts/mock_ai_service.py          # http://127.0.0.1:8100
 Backend memakai AI_SERVICE_BASE_URL default http://localhost:8100.
@@ -209,6 +217,69 @@ async def job_status(job_id: str):
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="job tidak ditemukan")
     return jobs[job_id]
+
+
+# ── Agentic RAG: narasi laporan ─────────────────────────────────────
+RAG_DELAY = float(os.environ.get("MOCK_RAG_DELAY_SECONDS", "1"))
+RAG_MODEL = "mock-qwen + mock-bge-m3"
+report_calls: dict[str, dict[str, Any]] = {}
+report_failures: list[str] = []  # antrean mode gagal untuk panggilan berikutnya
+STATUS_ID = {"consistent": "konsisten", "discrepant": "berbeda", "pm_only": "hanya PM", "am_only": "hanya AM"}
+
+
+class MockNext(BaseModel):
+    mode: Literal["error", "no_llm", "empty"]
+
+
+@app.post("/mock/reports/next")
+async def mock_reports_next(req: MockNext):
+    report_failures.append(req.mode)
+    return {"queued": report_failures}
+
+
+@app.get("/mock/reports/{matching_result_id}")
+async def mock_reports_calls(matching_result_id: str):
+    return report_calls.get(matching_result_id, {"calls": 0, "last_payload": None})
+
+
+@app.post("/api/v1/reports")
+async def create_report(payload: dict[str, Any]):
+    mrid = str(payload.get("matching_result_id", ""))
+    entry = report_calls.setdefault(mrid, {"calls": 0, "last_payload": None})
+    entry["calls"] += 1
+    entry["last_payload"] = payload
+    await asyncio.sleep(RAG_DELAY)
+
+    mode = report_failures.pop(0) if report_failures else None
+    if mode == "error":
+        raise HTTPException(status_code=500, detail="MOCK: kegagalan RAG")
+
+    summary = (payload.get("comparison") or {}).get("summary") or {}
+    teeth = (payload.get("comparison") or {}).get("teeth") or []
+    scores = payload.get("scores") or {}
+    pm = payload.get("pm_subject") or {}
+    detail = ", ".join(f"{t.get('fdi_number')} ({STATUS_ID.get(t.get('status'), t.get('status'))})" for t in teeth[:8])
+    content = (
+        "Ringkasan Temuan\n"
+        f"Perbandingan gigi subjek PM kasus {pm.get('case_reference') or '-'} dengan kandidat AM menunjukkan "
+        f"{summary.get('consistent', 0)} gigi konsisten, {summary.get('discrepant', 0)} berbeda, "
+        f"{summary.get('pm_only', 0)} hanya pada PM, dan {summary.get('am_only', 0)} hanya pada AM "
+        f"(confidence {scores.get('confidence_score')}) [1].\n\n"
+        f"Rincian per gigi: {detail or '-'}.\n\n"
+        "Kesimpulan\n"
+        "Temuan perlu diverifikasi odontolog forensik sesuai panduan INTERPOL DVI [2]. (MOCK)"
+    )
+    print(f"[MOCK_RAG] report {mrid} (panggilan ke-{entry['calls']}, mode {mode or 'ok'})")
+    return {
+        "content": "" if mode == "empty" else content,
+        "references": [
+            {"n": 1, "source": "DVI_DVI Guide 2023.pdf", "page": 12, "section": "Odontology", "score": 0.87},
+            {"n": 2, "source": "DVI_DVI Guide 2023.pdf", "page": 31, "section": "Reconciliation", "score": 0.74},
+        ],
+        "engine": "template" if mode == "no_llm" else "llm",
+        "warnings": [],
+        "model_version": RAG_MODEL,
+    }
 
 
 @app.get("/health")

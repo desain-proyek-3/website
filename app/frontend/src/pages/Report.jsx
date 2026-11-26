@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { AlertTriangle, ArrowLeft, FileText, Loader2, Printer } from 'lucide-react'
-import { ApiError, VIEW_TYPES, getIdentificationReport } from '../lib/api.js'
+import { AlertTriangle, ArrowLeft, FileText, Loader2, Printer, RotateCcw } from 'lucide-react'
+import { ApiError, VIEW_TYPES, generateReportNarrative, getIdentificationReport } from '../lib/api.js'
 import ToothComparisonTable from '../components/ToothComparisonTable.jsx'
 
 const fmtDate = (v) =>
@@ -46,23 +46,151 @@ function SubjectBlock({ title, s }) {
   )
 }
 
+function useElapsedSeconds(running) {
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => {
+    if (!running) return undefined
+    const start = Date.now()
+    setElapsed(0)
+    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000)
+    return () => clearInterval(timer)
+  }, [running])
+  return elapsed
+}
+
+const refLabel = (r) => {
+  const section = r.section && r.section.trim() !== '-' ? r.section : null
+  return [r.source || 'Sumber tidak diketahui', r.page != null ? `hlm. ${r.page}` : null].filter(Boolean).join(', ') +
+    (section ? ` — ${section}` : '')
+}
+
+/** Section 4: AI (RAG) narrative — available / not configured / generating / failed. */
+function AiAnalysis({ narrative, generating, error, onRetry }) {
+  const elapsed = useElapsedSeconds(generating)
+
+  if (narrative.status === 'available') {
+    return (
+      <>
+        <div className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-ink">{narrative.content}</div>
+        {narrative.warnings.length > 0 && (
+          <ul className="mt-3 space-y-1 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+            {narrative.warnings.map((w, i) => (
+              <li key={i}>⚠ {w}</li>
+            ))}
+          </ul>
+        )}
+        {narrative.references.length > 0 && (
+          <div className="mt-4">
+            <div className="readout">RUJUKAN</div>
+            <ol className="mt-1.5 space-y-1 text-[12px] text-slate-600">
+              {narrative.references.map((r, i) => (
+                <li key={i} className="flex gap-2">
+                  <span className="shrink-0 font-mono text-slate-400">[{r.n ?? i + 1}]</span>
+                  <span>{refLabel(r)}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+        <p className="mt-3 text-[11px] leading-snug text-slate-400">
+          Disusun AI{narrative.model_version ? ` (${narrative.model_version})` : ''} pada {fmtDate(narrative.generated_at)}.
+          Analisis ini merupakan alat bantu dan harus diverifikasi oleh odontolog forensik.
+        </p>
+      </>
+    )
+  }
+
+  if (narrative.status === 'not_available') {
+    return (
+      <div className="flex items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+        <FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
+        <div className="text-[13px] text-slate-700">
+          <p className="font-semibold">Analisis AI tidak tersedia.</p>
+          {narrative.message && <p className="mt-0.5 text-[12px] text-slate-500">{narrative.message}</p>}
+        </div>
+      </div>
+    )
+  }
+
+  if (error && !generating) {
+    return (
+      <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+        <div className="flex items-start gap-2.5">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+          <div className="text-[13px] text-red-900">
+            <p className="font-semibold">Analisis AI gagal dibuat.</p>
+            <p className="mt-0.5 text-[12px] text-red-800">{error}</p>
+            <p className="mt-0.5 text-[12px] text-red-800">Laporan dapat dicetak setelah analisis AI berhasil dibuat.</p>
+          </div>
+        </div>
+        <button onClick={onRetry} className="btn-ghost h-8 shrink-0 px-3 text-[12px]">
+          <RotateCcw className="h-3.5 w-3.5" />
+          Coba lagi
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-start gap-2.5 rounded-xl border border-teal-200 bg-teal-50/60 px-4 py-3">
+      <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-teal-600" />
+      <div className="text-[13px] text-teal-900">
+        <p className="font-semibold">Menyusun analisis AI… {elapsed > 0 && <span className="font-mono font-normal">{elapsed} dtk</span>}</p>
+        <p className="mt-0.5 text-[12px] text-teal-800">
+          AI menelaah hasil perbandingan gigi dan rujukan INTERPOL DVI. Proses ini dapat memakan waktu hingga beberapa
+          menit; jangan tutup halaman ini.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 /** INTERPOL DVI identification report for one confirmed PM–AM pair; print → PDF. */
 export default function Report() {
   const { id } = useParams()
   const [report, setReport] = useState(null)
   const [error, setError] = useState(null) // { status, message }
+  const [narrative, setNarrative] = useState(null)
+  const [generating, setGenerating] = useState(false)
+  const [narrativeError, setNarrativeError] = useState(null)
+  const generationRef = useRef(null) // AbortController of the running generation
+
+  const generateNarrative = useCallback(() => {
+    generationRef.current?.abort()
+    const ctrl = new AbortController()
+    generationRef.current = ctrl
+    setGenerating(true)
+    setNarrativeError(null)
+    generateReportNarrative(id, { signal: ctrl.signal })
+      .then((n) => !ctrl.signal.aborted && setNarrative(n))
+      .catch((err) => {
+        if (err.name !== 'AbortError' && !ctrl.signal.aborted) setNarrativeError(err.message)
+      })
+      .finally(() => !ctrl.signal.aborted && setGenerating(false))
+  }, [id])
 
   useEffect(() => {
     let cancelled = false
+    generationRef.current?.abort()
     setReport(null)
     setError(null)
+    setNarrative(null)
+    setGenerating(false)
+    setNarrativeError(null)
     getIdentificationReport(id)
-      .then((r) => !cancelled && setReport(r))
+      .then((r) => {
+        if (cancelled) return
+        setReport(r)
+        setNarrative(r.narrative)
+        // Generated once per match and stored by the backend; afterwards it is reused as-is.
+        if (r.narrative.status === 'pending') generateNarrative()
+      })
       .catch((err) => !cancelled && setError({ status: err instanceof ApiError ? err.status : 0, message: err.message }))
     return () => {
       cancelled = true
+      generationRef.current?.abort()
     }
-  }, [id])
+  }, [id, generateNarrative])
 
   if (error) {
     return (
@@ -84,7 +212,7 @@ export default function Report() {
     )
   }
 
-  if (!report) {
+  if (!report || !narrative) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 py-24 text-[13px] text-slate-500">
         <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
@@ -93,7 +221,14 @@ export default function Report() {
     )
   }
 
-  const { pm_subject: pm, am_subject: am, scores, decision, narrative } = report
+  const { pm_subject: pm, am_subject: am, scores, decision } = report
+  // Printing waits for the AI analysis; only an unconfigured RAG service may print without it.
+  const printReady = narrative.status === 'available' || narrative.status === 'not_available'
+  const printHint = printReady
+    ? undefined
+    : narrativeError && !generating
+      ? 'Analisis AI gagal — coba lagi di bagian 4 sebelum mencetak'
+      : 'Tunggu hingga analisis AI selesai disusun'
   const subjectLabel = (sid) => (sid === pm.id ? 'PM' : 'AM')
   const images = [...report.images].sort(
     (a, b) => subjectLabel(b.subject_id).localeCompare(subjectLabel(a.subject_id)) || a.view_type.localeCompare(b.view_type),
@@ -106,13 +241,28 @@ export default function Report() {
           <ArrowLeft className="h-3.5 w-3.5" />
           Forensic Review
         </Link>
-        <button onClick={() => window.print()} className="btn-primary h-9 px-4 text-[12.5px]">
-          <Printer className="h-3.5 w-3.5" />
-          Cetak / simpan PDF
+        <button
+          onClick={() => window.print()}
+          disabled={!printReady}
+          title={printHint}
+          className="btn-primary h-9 px-4 text-[12.5px] disabled:cursor-not-allowed"
+        >
+          {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Printer className="h-3.5 w-3.5" />}
+          {generating ? 'Menunggu analisis AI…' : 'Cetak / simpan PDF'}
         </button>
       </div>
 
-      <article className="card space-y-6 p-8 print:border-0 print:p-0 print:shadow-none">
+      {/* Ctrl+P bypasses the disabled button → print a notice instead of an incomplete report. */}
+      {!printReady && (
+        <div className="hidden p-8 text-[14px] text-ink print:block">
+          <p className="font-semibold">Laporan belum lengkap — analisis AI belum selesai.</p>
+          <p className="mt-1">Tunggu hingga bagian 4 "Analisis AI" selesai disusun, lalu cetak kembali.</p>
+        </div>
+      )}
+
+      <article
+        className={`card space-y-6 p-8 print:border-0 print:p-0 print:shadow-none ${printReady ? '' : 'print:hidden'}`}
+      >
         <header className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="readout">INTERPOL DVI · IDENTIFICATION REPORT</div>
@@ -160,30 +310,8 @@ export default function Report() {
           <ToothComparisonTable comparison={report.comparison} />
         </Section>
 
-        <Section no={4} title="Analisis & narasi temuan (Agentic RAG)">
-          {narrative.status === 'available' ? (
-            <>
-              <div className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-ink">{narrative.content}</div>
-              {narrative.references.length > 0 && (
-                <ol className="mt-3 list-decimal space-y-1 pl-5 text-[12px] text-slate-500">
-                  {narrative.references.map((r, i) => (
-                    <li key={i}>{r.title || r.source || JSON.stringify(r)}</li>
-                  ))}
-                </ol>
-              )}
-              {narrative.model_version && (
-                <p className="mt-2 font-mono text-[11px] text-slate-400">Model: {narrative.model_version}</p>
-              )}
-            </>
-          ) : (
-            <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-              <FileText className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-              <p className="text-[13px] text-amber-900">
-                {narrative.message || 'Narasi belum tersedia.'} Bagian ini akan berisi sintesis temuan dari Agentic RAG
-                (rujukan literatur odontologi forensik & panduan INTERPOL DVI) setelah layanan tersebut terhubung.
-              </p>
-            </div>
-          )}
+        <Section no={4} title="Analisis AI">
+          <AiAnalysis narrative={narrative} generating={generating} error={narrativeError} onRetry={generateNarrative} />
         </Section>
 
         <Section no={5} title="Chain-of-custody citra">

@@ -6,10 +6,11 @@ Hasil pencocokan AM vs PM (Matching Engine).
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, SmallInteger
 from sqlalchemy.types import REAL
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database import Base
@@ -73,6 +74,14 @@ class MatchingResult(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="now()"
+    )
+    # Narasi Agentic RAG laporan identifikasi (schema_phase5_report_narrative.sql) —
+    # dibuat sekali, dipakai ulang agar isi laporan cetak selalu sama.
+    report_narrative: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True  # None → SQL NULL (bukan JSON 'null')
+    )
+    report_narrative_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     # ── Relationships ───────────────────────────────────────────────

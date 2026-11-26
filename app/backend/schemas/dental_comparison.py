@@ -109,12 +109,32 @@ class ReportDecision(BaseModel):
     matched_at: datetime
 
 
+class NarrativeReference(BaseModel):
+    """Satu rujukan korpus yang dikutip narasi sebagai [n]."""
+    n: int | None = None
+    source: str | None = None
+    page: int | None = None
+    section: str | None = None
+    score: float | None = None
+
+
 class ReportNarrative(BaseModel):
-    """Bagian sintesis Agentic RAG (Qwen3). Kosong selama layanan RAG belum terhubung."""
-    status: Literal["available", "not_available", "failed"]
+    """
+    Bagian 4 "Analisis AI" laporan (narasi Agentic RAG).
+    - available     : narasi tersimpan (dibuat sekali, dipakai ulang tiap laporan dibuka)
+    - pending       : layanan RAG terhubung tetapi narasi belum dibuat → frontend memanggil
+                      POST /matching-results/{id}/report/narrative
+    - not_available : layanan RAG tidak dikonfigurasi → laporan tetap boleh dicetak
+                      dengan catatan "Analisis AI tidak tersedia"
+    Kegagalan pembuatan narasi dikembalikan sebagai HTTP 502/504, bukan status di sini.
+    """
+    status: Literal["available", "pending", "not_available"]
     content: str | None = None
-    references: list[dict[str, Any]] = Field(default_factory=list)
+    references: list[NarrativeReference] = Field(default_factory=list)
+    engine: str | None = None
+    warnings: list[str] = Field(default_factory=list)
     model_version: str | None = None
+    generated_at: datetime | None = None
     message: str | None = None
 
 
